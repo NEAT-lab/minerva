@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Minerva</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Minerva 雙語會議輔助系統</h1>
+            <div><span id="nodes-count" class="status-badge status-idle">尚未有任何裝置上線</span></div>
+        </div>
+
+        <div class="grid">
+            <!-- Room Provisioning Form -->
+            <div class="panel">
+                <h2>新增會議室</h2>
+                <form id="assign-form">
+                    <div class="form-group">
+                        <label for="room-id">會議室 ID</label>
+                        <input type="text" id="room-id" placeholder="e.g., room-1" required>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="llm-select">選擇 LLM 節點</label>
+                        <select id="llm-select" required>
+                            <option value="">-- 尚無閒置 LLM 節點 --</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label>選擇麥克風 (RPi 節點)</label>
+                        <div class="checkbox-group" id="mic-group">
+                            <div class="empty-state">尚無閒置麥克風。</div>
+                        </div>
+                    </div>
+
+                    <button type="submit" id="btn-submit">新增會議室</button>
+                </form>
+            </div>
+
+            <!-- Global Device Status -->
+            <div class="panel">
+                <h2>裝置註冊表</h2>
+                <ul class="device-list" id="global-device-list">
+                    <li class="empty-state">尚無裝置註冊。</li>
+                </ul>
+            </div>
+        </div>
+
+        <!-- Active Rooms -->
+        <div class="panel active-rooms">
+            <h2>已建立的會議室</h2>
+            <div id="active-rooms-container">
+                <div class="empty-state">尚無已建立的會議室。</div>
+            </div>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+
+</html>
