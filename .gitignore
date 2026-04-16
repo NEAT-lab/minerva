@@ -1,3 +1,5 @@
 *.db
 *.json
 __pycache__
+*_env
+*.log
