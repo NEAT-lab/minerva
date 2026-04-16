@@ -27,21 +27,23 @@ def on_connect(client, userdata, flags, rc, properties=None):
 def on_message(client, userdata, msg):
     try:
         topic_parts = msg.topic.split("/")
-        if len(topic_parts) == 4 and topic_parts[0] == "minerva" and topic_parts[1] == "nodes" and topic_parts[3] == "room_id_status":
+        if len(topic_parts) == 4 and topic_parts[0] == "minerva" and topic_parts[1] == "nodes":
             node_id = topic_parts[2]
-            room_id = msg.payload.decode("utf-8").strip()
             
-            for r_id in list(rooms.keys()):
-                if node_id in rooms[r_id]:
-                    rooms[r_id].remove(node_id)
-                if not rooms[r_id]:
-                    del rooms[r_id]
-            
-            if room_id:
-                if room_id not in rooms:
-                    rooms[room_id] = []
-                if node_id not in rooms[room_id]:
-                    rooms[room_id].append(node_id)
+            if topic_parts[3] == "room_id_status":
+                room_id = msg.payload.decode("utf-8").strip()
+                
+                for r_id in list(rooms.keys()):
+                    if node_id in rooms[r_id]:
+                        rooms[r_id].remove(node_id)
+                        if not rooms[r_id]:
+                            del rooms[r_id]
+                
+                if room_id:
+                    if room_id not in rooms:
+                        rooms[room_id] = []
+                    if node_id not in rooms[room_id]:
+                        rooms[room_id].append(node_id)
 
     except Exception as e:
         print(f"Error processing message: {e}")
@@ -55,12 +57,30 @@ mqtt_client.on_message = on_message
 def index():
     return render_template("index.html")
 
-@app.route("/available_nodes", methods=["GET"])
-def available_nodes():
+@app.route("/online_nodes", methods=["GET"])
+def online_nodes():
+    """回傳所有上線節點，並根據 rooms 字典標記 idle/busy，TD 保持不被污染"""
     try:
         r = requests.get(f"{REGISTRATION_SERVER_URL}/things", timeout=5)
         if r.status_code == 200:
-            return jsonify(r.json()), 200
+            tds = r.json()
+            # 建立一個快速查找表：node_id -> room_id
+            node_room_map = {}
+            for r_id, participants in rooms.items():
+                for node_id in participants:
+                    node_room_map[node_id] = r_id
+            
+            result = []
+            for td in tds:
+                node_id = td.get("id")
+                room_id = node_room_map.get(node_id)
+                result.append({
+                    "td": td,
+                    "status": "busy" if room_id else "idle",
+                    "room_id": room_id
+                })
+            return jsonify(result), 200
+        return jsonify({"error": f"Registration Server returned {r.status_code}"}), r.status_code
     except Exception as e:
         return jsonify({"error": "Proxy to Registration Server failed"}), 500
 
