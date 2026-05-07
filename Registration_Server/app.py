@@ -1,148 +1,151 @@
-import sqlite3
 import json
+import sqlite3
 import time
-import threading
-from flask import Flask, jsonify
-from flask_cors import CORS
-import paho.mqtt.client as mqtt
 
-app = Flask(__name__)
-CORS(app)
+import paho.mqtt.client as mqtt
+from flask import Flask, abort, jsonify, request
+from flask_cors import CORS
+
 
 FLASK_HOST = "0.0.0.0"
 FLASK_PORT = 5002
 
-FLASK_BROKER_HOST = "127.0.0.1"
-FLASK_BROKER_PORT = 1883
-CLIENT_ID = "registration_server"
+BROKER_HOST = "localhost"
+BROKER_PORT = 1883
+REGISTRATION_TOPIC = "registration/register"
+
 DB_FILE = "things.db"
-OFFLINE_THRESHOLD = 30 # 裝置超過 30 秒沒動靜視為下線
-CHECK_INTERVAL = 10    # 背景檢查間隔 (秒)
+
+
+app = Flask(__name__)
+CORS(app)
+
 
 def init_db():
     with sqlite3.connect(DB_FILE) as conn:
-        cursor = conn.cursor()
-        cursor.executescript('''
+        conn.executescript("""
             CREATE TABLE IF NOT EXISTS things (
-                id TEXT PRIMARY KEY, -- 設備唯一識別碼
-                title TEXT NOT NULL, -- 對應 TD 頂層的 title
-                status TEXT NOT NULL DEFAULT 'online', -- 設備狀態
-                last_seen INTEGER, -- 最後上線時間 (Unix timestamp)
-                td_content TEXT NOT NULL, -- 設備的完整 TD 內容
-                created_at INTEGER, -- 創建時間
-                updated_at INTEGER -- 更新時間
+                id            TEXT PRIMARY KEY,
+                td_content    TEXT NOT NULL,
+                registered_at INTEGER NOT NULL,
+                updated_at    INTEGER NOT NULL
             );
-
-            CREATE INDEX IF NOT EXISTS idx_status ON things(status);
-            CREATE INDEX IF NOT EXISTS idx_last_seen ON things(last_seen);
-        ''')
+        """)
         conn.commit()
-        print("Database initialized successfully.")
+    print(f"TDD initialized: {DB_FILE}")
 
-@app.route("/things", methods=["GET"])
-def get_things():
-    current_time = time.time()
-    cutoff = current_time - 30 
+
+def upsert_td(td):
+    """共用：將 TD upsert 到 things 表；HTTP 與 MQTT 兩條路徑都呼叫這個"""
+    if not isinstance(td, dict):
+        return False
+    types = td.get("@type", [])
+    if isinstance(types, list) and "tm:ThingModel" in types:
+        return False  # 拒絕 TM（未實例化）
+    thing_id = td.get("id")
+    if not thing_id:
+        return False
+    raw = json.dumps(td)
+    if "{{" in raw:
+        return False  # 拒絕含未替換 placeholder
+    now = int(time.time())
     with sqlite3.connect(DB_FILE) as conn:
-        conn.row_factory = sqlite3.Row # 允許使用名稱存取欄位
-        cursor = conn.cursor()
-        # 只需回傳 function server 最近 30 秒內上線的設備 TD
-        cursor.execute("SELECT td_content FROM things WHERE last_seen >= ? AND status = 'online'", [cutoff]) 
-        rows = cursor.fetchall()
+        conn.execute("""
+            INSERT INTO things (id, td_content, registered_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                td_content = excluded.td_content,
+                updated_at = excluded.updated_at
+        """, (thing_id, raw, now, now))
+        conn.commit()
+    print(f"Registered updated: {thing_id}")
+    return True
 
-        things = []
-        for row in rows:
-            td = json.loads(row['td_content'])
-            things.append(td)
-        
-        return jsonify(things)
 
-def check_offline_devices():
-    """背景執行緒：定期檢查並將過期裝置標記為 offline"""
-    while True:
-        try:
-            now = int(time.time())
-            cutoff = now - OFFLINE_THRESHOLD
-            with sqlite3.connect(DB_FILE) as conn:
-                cursor = conn.cursor()
-                # 尋找超過 30 秒沒更新且目前狀態為 online 的裝置
-                cursor.execute('''
-                    UPDATE things 
-                    SET status = 'offline', updated_at = ? 
-                    WHERE last_seen < ? AND status = 'online'
-                ''', [now, cutoff])
-                if cursor.rowcount > 0:
-                    print(f"Background Task: Marked {cursor.rowcount} stale devices as offline.")
-                conn.commit()
-        except Exception as e:
-            print(f"Background Task Error: {e}")
-        time.sleep(CHECK_INTERVAL)
+# ---- HTTP endpoints --------------------------------------------------
 
-mqtt_client = mqtt.Client(client_id=CLIENT_ID, protocol=mqtt.MQTTv5)
-def on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        print("Connected to MQTT Broker!")
-        client.subscribe("registration/register")
-        client.subscribe("registration/offline") 
+@app.post("/things")
+def register_http():
+    td = request.get_json(silent=True)
+    if td is None:
+        abort(400, "request body must be valid JSON")
+    if not upsert_td(td):
+        abort(400, "TD missing required 'id' field")
+    return jsonify(td), 201
+
+
+@app.get("/things")
+def list_things():
+    with sqlite3.connect(DB_FILE) as conn:
+        rows = conn.execute("SELECT td_content FROM things").fetchall()
+    return jsonify([json.loads(row[0]) for row in rows])
+
+
+@app.get("/things/<path:thing_id>")
+def get_thing(thing_id):
+    with sqlite3.connect(DB_FILE) as conn:
+        row = conn.execute(
+            "SELECT td_content FROM things WHERE id = ?", (thing_id,)
+        ).fetchone()
+    if row is None:
+        abort(404)
+    return jsonify(json.loads(row[0]))
+
+
+@app.delete("/things/<path:thing_id>")
+def delete_thing(thing_id):
+    with sqlite3.connect(DB_FILE) as conn:
+        cur = conn.execute("DELETE FROM things WHERE id = ?", (thing_id,))
+        conn.commit()
+    if cur.rowcount == 0:
+        abort(404)
+    print(f"Deregistered: {thing_id}")
+    return "", 204
+
+
+# ---- MQTT subscriber -------------------------------------------------
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    if reason_code == 0:
+        client.subscribe(REGISTRATION_TOPIC, qos=1)
+        print(f"MQTT connected, subscribed to {REGISTRATION_TOPIC}")
     else:
-        print("Failed to connect, return code {}".format(rc))
+        print(f"MQTT connect failed: reason_code={reason_code}")
+
 
 def on_message(client, userdata, msg):
     try:
-        if msg.topic == "registration/register":
-            td = json.loads(msg.payload.decode("utf-8"))
-            thing_id = td.get("id")
-            title = td.get("title", "Unknown")
-            
-            if not thing_id: return
-
-            now = int(time.time())
-            with sqlite3.connect(DB_FILE) as conn:
-                cursor = conn.cursor()
-                cursor.execute('''
-                    INSERT INTO things (id, title, status, last_seen, td_content, updated_at, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        title = excluded.title,
-                        status = excluded.status,
-                        last_seen = excluded.last_seen,
-                        td_content = excluded.td_content,
-                        updated_at = excluded.updated_at
-                ''', [thing_id, title, "online", now, json.dumps(td), now, now])
-                conn.commit()
-
-            print(f"Device registered/updated: {thing_id}")
-        
-        elif msg.topic == "registration/offline":
-            # 處理來自 LWT 或手動發布的下線通知
-            thing_id = msg.payload.decode("utf-8")
-            if thing_id:
-                now = int(time.time())
-                with sqlite3.connect(DB_FILE) as conn:
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        UPDATE things SET status = 'offline', updated_at = ? WHERE id = ?
-                    ''', [now, thing_id])
-                    conn.commit()
-                print(f"Device marked offline via Topic: {thing_id}")
-
+        td = json.loads(msg.payload.decode("utf-8"))
     except Exception as e:
-        print(f"Error processing message: {e}")
+        print(f"MQTT message JSON parse error: {e}")
+        return
+    if not upsert_td(td):
+        print(f"忽略 MQTT 訊息（TD 缺 id）")
 
+
+mqtt_client = mqtt.Client(
+    callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+    client_id="registration_server",
+    protocol=mqtt.MQTTv5,
+)
 mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
+
+def connect_broker_with_retry():
+    """Broker 還沒起時不要直接 crash，等到連上為止"""
+    while True:
+        try:
+            mqtt_client.connect(BROKER_HOST, BROKER_PORT, 60)
+            return
+        except Exception as e:
+            print(f"等 broker 中... {e}")
+            time.sleep(5)
+
+
 if __name__ == "__main__":
     init_db()
-    threading.Thread(target=check_offline_devices, daemon=True).start()
-    
-    try:
-        mqtt_client.connect(FLASK_BROKER_HOST, FLASK_BROKER_PORT, 60)
-        mqtt_client.loop_start()
-        print(f"Registration Server is running on {FLASK_HOST}:{FLASK_PORT}")
-        app.run(host=FLASK_HOST, port=FLASK_PORT, debug=True, use_reloader=False)
-    except Exception as e:
-        print(f"MQTT Connection Error: {e}")
-    finally:
-        mqtt_client.disconnect()
-        mqtt_client.loop_stop()
+    connect_broker_with_retry()
+    mqtt_client.loop_start()
+    print(f"Registration Server (TDD) listening on {FLASK_HOST}:{FLASK_PORT}")
+    app.run(host=FLASK_HOST, port=FLASK_PORT, debug=True, use_reloader=False)

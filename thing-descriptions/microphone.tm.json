@@ -1,0 +1,69 @@
+{
+  "@context": [
+    "https://www.w3.org/2022/wot/td/v1.1",
+    {
+      "mqv": "https://www.w3.org/TR/wot-mqtt-binding/",
+      "sosa": "http://www.w3.org/ns/sosa/"
+    }
+  ],
+  "@type": ["tm:ThingModel", "sosa:Sensor"],
+  "title": "Audio Microphone",
+  "description": "Generic VAD-segmented audio capture device. Publishes one event per detected utterance with base64-encoded WAV payload. Suitable for any speech-driven application consuming utterance-level audio chunks.",
+  "version": { "model": "0.1.0" },
+
+  "securityDefinitions": {
+    "nosec_sc": { "scheme": "nosec" }
+  },
+  "security": "nosec_sc",
+
+  "events": {
+    "audio": {
+      "title": "Detected Utterance",
+      "description": "Emitted when VAD detects end of an utterance. Payload is one self-contained audio segment.",
+      "data": {
+        "type": "object",
+        "readOnly": true,
+        "writeOnly": false,
+        "required": ["audio_b64", "sample_rate", "ts"],
+        "properties": {
+          "audio_b64": {
+            "type": "string",
+            "readOnly": true,
+            "writeOnly": false,
+            "contentEncoding": "base64",
+            "contentMediaType": "audio/wav",
+            "description": "Base64-encoded WAV audio of the utterance"
+          },
+          "sample_rate": {
+            "type": "integer",
+            "readOnly": true,
+            "writeOnly": false,
+            "description": "Sample rate in Hz (typically 16000)"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "readOnly": true,
+            "writeOnly": false,
+            "description": "Utterance duration in milliseconds"
+          },
+          "ts": {
+            "type": "integer",
+            "readOnly": true,
+            "writeOnly": false,
+            "description": "UTC timestamp (ms epoch) when utterance started"
+          }
+        }
+      },
+      "forms": [
+        {
+          "op": "subscribeevent",
+          "href": "mqtt://{{MQTT_BROKER}}",
+          "contentType": "application/json",
+          "mqv:topic": "things/{{NODE_ID}}/events/audio",
+          "mqv:qos": 1,
+          "mqv:controlPacket": "subscribe"
+        }
+      ]
+    }
+  }
+}
