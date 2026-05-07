@@ -1,0 +1,80 @@
+{
+  "@context": [
+    "https://www.w3.org/2022/wot/td/v1.1",
+    { "ssn": "http://www.w3.org/ns/ssn/" }
+  ],
+  "@type": "ssn:System",
+  "id": "urn:uuid:translator-001",
+  "title": "Translator Node",
+  "description": "Generic text translation service. Accepts source text plus source/target language tags and returns translated text. Reference implementation uses Facebook NLLB-200 with OpenCC s2t for Simplified→Traditional Chinese normalization.",
+  "version": { "instance": "0.1.0" },
+
+  "securityDefinitions": {
+    "nosec_sc": { "scheme": "nosec" }
+  },
+  "security": "nosec_sc",
+
+  "actions": {
+    "translate": {
+      "title": "Text Translation",
+      "description": "Translate source text from one language to another.",
+      "input": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["text", "source", "target"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Source text to translate"
+          },
+          "source": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Source language tag in NLLB-200 format (e.g. 'eng_Latn', 'zho_Hans', 'zho_Hant')"
+          },
+          "target": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Target language tag in NLLB-200 format"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Translated text"
+          }
+        }
+      },
+      "safe": false,
+      "idempotent": true,
+      "forms": [
+        {
+          "op": "invokeaction",
+          "href": "http://{{HOST}}:{{PORT}}/translate",
+          "contentType": "application/json"
+        }
+      ]
+    }
+  },
+
+  "links": [
+    {
+      "rel": "service-meta",
+      "href": "http://{{HOST}}:{{PORT}}/health",
+      "type": "application/json"
+    }
+  ]
+}
