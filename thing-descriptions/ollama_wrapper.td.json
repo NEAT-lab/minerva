@@ -1,0 +1,171 @@
+{
+  "@context": [
+    "https://www.w3.org/2022/wot/td/v1.1",
+    { "ssn": "http://www.w3.org/ns/ssn/" }
+  ],
+  "@type": "ssn:System",
+  "id": "urn:uuid:ollama-wrapper-001",
+  "title": "Ollama LLM Service",
+  "description": "Generic LLM chat completion service. Conforms to Ollama /api/chat specification (https://docs.ollama.com/api/chat). Stateless: caller provides full messages array on each invocation. Reference implementation wraps a local Ollama daemon.",
+  "version": { "instance": "0.1.0" },
+
+  "links": [
+    {
+      "rel": "describedby",
+      "href": "https://docs.ollama.com/api/chat",
+      "type": "text/html"
+    },
+    {
+      "rel": "service-meta",
+      "href": "http://{{HOST}}:{{PORT}}/health",
+      "type": "application/json"
+    }
+  ],
+
+  "securityDefinitions": {
+    "nosec_sc": { "scheme": "nosec" }
+  },
+  "security": "nosec_sc",
+
+  "actions": {
+    "chat": {
+      "title": "Chat Completion",
+      "description": "Send a chat request to the LLM. Mirrors Ollama /api/chat request schema.",
+      "input": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["model", "messages"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Model name (e.g. 'llama3:latest')"
+          },
+          "messages": {
+            "type": "array",
+            "readOnly": false,
+            "writeOnly": false,
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "readOnly": false,
+              "writeOnly": false,
+              "required": ["role", "content"],
+              "description": "Per Ollama spec: a chat message.",
+              "properties": {
+                "role": {
+                  "type": "string",
+                  "readOnly": false,
+                  "writeOnly": false,
+                  "enum": ["system", "user", "assistant", "tool"]
+                },
+                "content": {
+                  "type": "string",
+                  "readOnly": false,
+                  "writeOnly": false
+                }
+              }
+            }
+          },
+          "stream": {
+            "type": "boolean",
+            "readOnly": false,
+            "writeOnly": false,
+            "default": false,
+            "description": "If true, stream partial responses (not used by Minerva)"
+          },
+          "format": {
+            "readOnly": false,
+            "writeOnly": false,
+            "oneOf": [
+              {
+                "type": "string",
+                "readOnly": false,
+                "writeOnly": false,
+                "const": "json"
+              },
+              {
+                "type": "object",
+                "readOnly": false,
+                "writeOnly": false,
+                "description": "JSON Schema constraining response structure"
+              }
+            ]
+          },
+          "options": {
+            "type": "object",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Per Ollama spec: model runtime options (temperature, seed, top_k, etc.)"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["model", "created_at", "message", "done"],
+        "properties": {
+          "model": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false
+          },
+          "created_at": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "format": "date-time"
+          },
+          "message": {
+            "type": "object",
+            "readOnly": false,
+            "writeOnly": false,
+            "required": ["role", "content"],
+            "description": "Per Ollama spec: a chat message.",
+            "properties": {
+              "role": {
+                "type": "string",
+                "readOnly": false,
+                "writeOnly": false,
+                "enum": ["system", "user", "assistant", "tool"]
+              },
+              "content": {
+                "type": "string",
+                "readOnly": false,
+                "writeOnly": false
+              }
+            }
+          },
+          "done": {
+            "type": "boolean",
+            "readOnly": false,
+            "writeOnly": false
+          },
+          "total_duration": {
+            "type": "integer",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Total duration in nanoseconds"
+          },
+          "eval_count": {
+            "type": "integer",
+            "readOnly": false,
+            "writeOnly": false
+          }
+        }
+      },
+      "safe": false,
+      "idempotent": false,
+      "forms": [
+        {
+          "op": "invokeaction",
+          "href": "http://{{HOST}}:{{PORT}}/api/chat",
+          "contentType": "application/json"
+        }
+      ]
+    }
+  }
+}
