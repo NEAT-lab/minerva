@@ -1,0 +1,80 @@
+{
+  "@context": [
+    "https://www.w3.org/2022/wot/td/v1.1",
+    { "ssn": "http://www.w3.org/ns/ssn/" }
+  ],
+  "@type": "ssn:System",
+  "id": "urn:uuid:stt-001",
+  "title": "Speech-to-Text Node",
+  "description": "Generic speech-to-text inference service. Accepts base64-encoded WAV audio and returns transcribed text. Reference implementation uses OpenAI Whisper.",
+  "version": { "instance": "0.1.0" },
+
+  "securityDefinitions": {
+    "nosec_sc": { "scheme": "nosec" }
+  },
+  "security": "nosec_sc",
+
+  "actions": {
+    "transcribe": {
+      "title": "Speech-to-Text Transcription",
+      "description": "Transcribe one base64-encoded WAV audio segment to text.",
+      "input": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["audio_b64"],
+        "properties": {
+          "audio_b64": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "contentEncoding": "base64",
+            "contentMediaType": "audio/wav"
+          },
+          "language": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "ISO 639-1 language hint (e.g. 'en', 'zh'). Optional; if omitted the model auto-detects."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "readOnly": false,
+        "writeOnly": false,
+        "required": ["text"],
+        "properties": {
+          "text": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false
+          },
+          "language": {
+            "type": "string",
+            "readOnly": false,
+            "writeOnly": false,
+            "description": "Detected or provided language"
+          }
+        }
+      },
+      "safe": false,
+      "idempotent": true,
+      "forms": [
+        {
+          "op": "invokeaction",
+          "href": "http://{{HOST}}:{{PORT}}/transcribe",
+          "contentType": "application/json"
+        }
+      ]
+    }
+  },
+
+  "links": [
+    {
+      "rel": "service-meta",
+      "href": "http://{{HOST}}:{{PORT}}/health",
+      "type": "application/json"
+    }
+  ]
+}
