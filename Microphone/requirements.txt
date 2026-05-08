@@ -1,0 +1,5 @@
+paho-mqtt>=2.1
+sounddevice>=0.5
+soundfile>=0.12
+webrtcvad-wheels>=2.0
+numpy>=2.1
