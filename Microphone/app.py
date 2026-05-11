@@ -53,11 +53,13 @@ BLOCK_SAMPLES_CAPTURE = BLOCK_SAMPLES_EMIT * DOWNSAMPLE_FACTOR  # 1440 samples @
 
 # VAD / 能量參數預設值（適用一般辦公室 / 會議室；極端環境用 calibrate.py 校準後 override）
 VAD_MODE = 2                        # 0-3，2 為一般 voice IoT 預設（Mycroft 等）
-START_CONFIRM_FRAMES = 3            # 連續 N frame 為 speech 才確認 utterance start（3 = 90ms）
+START_CONFIRM_FRAMES = 6            # 連續 N frame 為 speech 才確認 utterance start（6 = 180ms）
+                                    # 第一層防禦：短於 180ms 的瞬間（敲擊、椅子聲、輕觸）連 VAD 都不觸發
 MIN_SILENCE_MS = 800                # 連續靜音 N ms 後判定 utterance 結束
 RMS_GATE = 800                      # 啟動門檻：未 recording 時 RMS < 此值不送 VAD（防 false start）
-SILENCE_FLOOR = 200                 # recording 中 RMS < 此值強制計入 silence（環境噪音持續時也能正確 end）
-MIN_UTTERANCE_MS = 1000             # 過短 utterance 視為噪音直接捨棄（防 Whisper "Bye." 類幻覺）
+SILENCE_FLOOR = 700                 # recording 中 RMS < 此值強制計入 silence（環境噪音持續時也能正確 end）
+MIN_UTTERANCE_MS = 300              # 第二層防禦：< 300ms 必為瞬間雜音直接丟；保留「好/OK/對」等短回應
+                                    # 真噪音 (≥ 300ms) 交給 STT 的反幻覺過濾擋掉
 MAX_UTTERANCE_MS = 60000            # 單 utterance 上限：Opus @ 24kbps × 60s ≈ 180KB，安全低於 1MB MQTT cap
 
 # 若有 calibration.json（calibrate.py 產出）則覆蓋上方門檻參數
@@ -274,6 +276,7 @@ def on_audio_chunk(indata, frames, time_info, status):
     if speech_event and "start" in speech_event:
         recording = True
         utterance_start_ts = int(time.time() * 1000)
+        print(f"Speech detected, recording... (rms={rms})")
         encode_queue.put(("start", utterance_start_ts))
         # 倒帶：把 pre-roll buffer（含當前 chunk）依序餵進 encoder，補回 confirm 期間的開頭
         for c in pre_roll_buffer:
