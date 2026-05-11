@@ -5,7 +5,6 @@
 用法：
     python calibrate.py              # 完整校準
     python calibrate.py --live       # 即時 RMS 監測
-    python calibrate.py --quick      # 跳過 VAD mode 測試（更快）
 """
 import argparse
 import datetime
@@ -23,6 +22,7 @@ EMIT_RATE = 16000
 DOWNSAMPLE = 3
 BLOCK_SAMPLES_CAPTURE = 1440      # 30ms @ 48kHz
 BLOCK_SAMPLES_EMIT = 480          # 30ms @ 16kHz
+RECORD_SECONDS = 15               # 各 phase 錄音時長
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 CALIBRATION_PATH = os.path.join(THIS_DIR, "calibration.json")
@@ -87,12 +87,12 @@ def phase1_device_check():
     return device_idx
 
 
-def phase2_background(device, duration=15):
+def phase2_background(device):
     print()
     print("=" * 60)
     print(f"Phase 2：背景噪音測量（請保持完全安靜）")
     print("=" * 60)
-    print(f"  即將開始錄音 {duration}s。請不要說話、不要敲鍵盤、不要動椅子。")
+    print(f"  即將開始錄音 {RECORD_SECONDS}s。請不要說話、不要敲鍵盤、不要動椅子。")
     input("  按 Enter 開始...")
 
     chunks = []
@@ -105,7 +105,7 @@ def phase2_background(device, duration=15):
 
     with sd.InputStream(device=device, samplerate=CAPTURE_RATE, channels=1,
                         blocksize=BLOCK_SAMPLES_CAPTURE, dtype="float32", callback=cb):
-        countdown(duration, "錄背景")
+        countdown(RECORD_SECONDS, "錄背景")
 
     rms = np.array(rms_samples)
     stats = {
@@ -125,12 +125,12 @@ def phase2_background(device, duration=15):
     return stats, chunks
 
 
-def phase3_voice(device, duration=15):
+def phase3_voice(device, bg_stats):
     print()
     print("=" * 60)
     print(f"Phase 3：人聲測量")
     print("=" * 60)
-    print(f"  即將錄音 {duration}s。請以正常會議音量自然講話，可以朗讀任何文字。")
+    print(f"  即將錄音 {RECORD_SECONDS}s。請以正常會議音量自然講話，可以朗讀任何文字。")
     print(f"  範例：「Hello, my name is Alice. I work on distributed systems at Acme Corp.")
     print(f"          The quick brown fox jumps over the lazy dog.」")
     input("  按 Enter 開始...")
@@ -148,26 +148,29 @@ def phase3_voice(device, duration=15):
 
     with sd.InputStream(device=device, samplerate=CAPTURE_RATE, channels=1,
                         blocksize=BLOCK_SAMPLES_CAPTURE, dtype="float32", callback=cb):
-        countdown(duration, "錄人聲")
+        countdown(RECORD_SECONDS, "錄人聲")
 
     rms = np.array(rms_samples)
-    # 過濾過低值（停頓 / 換氣）以估「實際發聲」分布
-    voiced = rms[rms > rms.mean() * 0.3]
-    if len(voiced) == 0:
+    # 用 Phase 2 量到的背景 p99 當門檻：只保留「明顯高過背景」的 frame 視為真實發聲
+    # 避免換氣 / 停頓的 chunk 進入 voice stats，把 p20 / p35 / p50 拉低
+    voice_floor = bg_stats["p99"]
+    voiced = rms[rms > voice_floor]
+    if len(voiced) < 10:                         # voice 太少，可能使用者沒講話；fallback 避免空陣列
         voiced = rms
 
     stats = {
         "min": int(rms.min()),
-        "p20": int(np.percentile(voiced, 20)),    # 軟發聲
-        "p50": int(np.percentile(voiced, 50)),    # 常態
-        "p95": int(np.percentile(voiced, 95)),    # 重音
+        "p20": int(np.percentile(voiced, 20)),    # 軟發聲下界（含換氣／停頓）
+        "p35": int(np.percentile(voiced, 35)),    # 健康檢查用：軟與常態之間的代表值
+        "p50": int(np.percentile(voiced, 50)),    # 常態人聲
+        "p95": int(np.percentile(voiced, 95)),    # 重音／句首
         "max": int(rms.max()),
         "mean": int(voiced.mean()),
         "clip_frames": clip_count,
         "total_frames": len(rms_samples),
     }
-    print(f"  → 人聲 RMS  voiced_p20={stats['p20']}  voiced_p50={stats['p50']}  "
-          f"voiced_p95={stats['p95']}")
+    print(f"  → 人聲 RMS  voiced_p20={stats['p20']}  voiced_p35={stats['p35']}  "
+          f"voiced_p50={stats['p50']}  voiced_p95={stats['p95']}")
 
     if stats["p50"] < 1500:
         print("  ⚠️  人聲偏弱（p50 < 1500）；建議講大聲、靠近 mic、或調高 alsamixer mic 增益")
@@ -202,34 +205,44 @@ def phase4_vad_modes(bg_chunks, target_max_fpr=0.02):
         marker = "✅" if fpr <= target_max_fpr else "❌"
         print(f"  {marker} mode {mode}: false-positive {fpr*100:.1f}% ({speech_count}/{len(bg_chunks)})")
 
-    # 選擇：滿足 target_max_fpr 的最低 mode（不過度過濾）；都不滿足就 mode 3
+    # 選擇：滿足 target_max_fpr 的最高 mode；高 mode 對 silence 偵測更積極，end 觸發更快。
+    # 一般環境 mode 3 都通過（FPR 必為各 mode 中最低）；只有極吵環境才會 fallback。
     chosen = 3
-    for mode in [0, 1, 2, 3]:
+    for mode in [3, 2, 1, 0]:
         if results[mode] <= target_max_fpr:
             chosen = mode
             break
-    print(f"  → 選擇 mode {chosen}（false-positive ≤ {target_max_fpr*100:.0f}% 的最低 mode）")
+    print(f"  → 選擇 mode {chosen}（FPR ≤ {target_max_fpr*100:.0f}% 的最高 mode；end 觸發較積極）")
     return chosen, results
 
 
 # ---------- Compute calibration ----------
 
 def compute_calibration(bg, voice, vad_mode):
-    """從測量結果推導參數值"""
-    # SILENCE_FLOOR：略高於背景 noise floor，但低於最弱人聲
-    silence_floor = max(100, min(int(bg["p99"] * 1.3), int(voice["p20"] * 0.4)))
+    """從測量結果推導參數值。
 
-    # RMS_GATE：擋背景，但低於常態人聲（取軟發聲 p20 × 0.7 與背景 p95 × 2.5 的較小者）
-    rms_gate = max(silence_floor + 200,
-                   min(int(voice["p20"] * 0.7), int(bg["p95"] * 2.5)))
+    SILENCE_FLOOR 採「背景 p95 與人聲 p20 之中點」：
+      - 必然 > bg.p95：擋下 95% 以上背景 frame，強制計 silence
+      - 必然 < voice.p20：不會誤切最弱人聲
+    若兩者倒置（bg.p95 ≥ voice.p20，即背景比軟發聲還大）→ 環境異常，
+    回退為 bg.p95 並警告（健康檢查會 fail）。
+    """
+    if bg["p95"] < voice["p20"]:
+        silence_floor = max(100, (bg["p95"] + voice["p20"]) // 2)
+    else:
+        silence_floor = max(100, int(bg["p95"]))   # 退化情境，仍給保底值
 
+    # RMS_GATE = SILENCE_FLOOR 與常態人聲（p50）之中點。
+    # 採中點公式，跟 SILENCE_FLOOR 設計一致：用數學分界取代 magic number。
+    # 不依賴 voice.p20（停頓會把 p20 拉低），對講話多停頓的使用者更穩定。
+    rms_gate = max(silence_floor + 100, (silence_floor + voice["p50"]) // 2)
+
+    # 只回傳跟環境直接相關的三個 override
+    # MIN_SILENCE_MS / START_CONFIRM_FRAMES / MIN_UTTERANCE_MS 跟環境無關，留給 app.py defaults
     return {
         "VAD_MODE": vad_mode,
         "RMS_GATE": rms_gate,
         "SILENCE_FLOOR": silence_floor,
-        "MIN_SILENCE_MS": 1200,        # 預設值；自然停頓量測較難 robust，沿用
-        "START_CONFIRM_FRAMES": 6,     # 180ms confirm，pre-roll 已 cover
-        "MIN_UTTERANCE_MS": 1500,      # 過短 utterance 易致 Whisper 幻覺
     }
 
 
@@ -248,12 +261,12 @@ def show_report(bg, voice, vad_results, calib):
     print()
     print(f"  健康檢查：")
     pass_silence = bg["p99"] < calib["SILENCE_FLOOR"]
-    pass_gate = calib["RMS_GATE"] < voice["p20"]
     pass_separation = calib["SILENCE_FLOOR"] < calib["RMS_GATE"]
+    pass_gate = calib["RMS_GATE"] < voice["mean"]
     print(f"    背景 p99 < SILENCE_FLOOR   {'✅' if pass_silence else '❌'} ({bg['p99']} < {calib['SILENCE_FLOOR']})")
     print(f"    SILENCE_FLOOR < RMS_GATE  {'✅' if pass_separation else '❌'}")
-    print(f"    RMS_GATE < 人聲 p20       {'✅' if pass_gate else '❌'} ({calib['RMS_GATE']} < {voice['p20']})")
-    if not (pass_silence and pass_gate and pass_separation):
+    print(f"    RMS_GATE < 人聲 mean      {'✅' if pass_gate else '❌'} ({calib['RMS_GATE']} < {voice['mean']})")
+    if not (pass_silence and pass_separation and pass_gate):
         print("    ⚠️  某些檢查未通過，可能是環境吵 / 人聲弱；參數仍寫入但效果可能不佳")
 
 
@@ -298,9 +311,6 @@ def live(device):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="即時 RMS 監測")
-    parser.add_argument("--quick", action="store_true", help="跳過 VAD mode 測試")
-    parser.add_argument("--bg-secs", type=int, default=15)
-    parser.add_argument("--voice-secs", type=int, default=15)
     args = parser.parse_args()
 
     device = phase1_device_check()
@@ -311,14 +321,9 @@ if __name__ == "__main__":
         live(device)
         exit(0)
 
-    bg, bg_chunks = phase2_background(device, args.bg_secs)
-    voice = phase3_voice(device, args.voice_secs)
-
-    if args.quick:
-        vad_mode = 3
-        vad_results = {3: -1}
-    else:
-        vad_mode, vad_results = phase4_vad_modes(bg_chunks)
+    bg, bg_chunks = phase2_background(device)
+    voice = phase3_voice(device, bg)
+    vad_mode, vad_results = phase4_vad_modes(bg_chunks)
 
     calib = compute_calibration(bg, voice, vad_mode)
     show_report(bg, voice, vad_results, calib)
