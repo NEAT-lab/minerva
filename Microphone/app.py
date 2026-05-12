@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import deque
 
 import numpy as np
 import paho.mqtt.client as mqtt
@@ -43,17 +44,38 @@ REGISTRATION_TOPIC = "registration/register"
 PRESENCE_TOPIC = f"presence/{NODE_ID}"
 AUDIO_TOPIC = f"things/{NODE_ID}/events/audio"
 
-CAPTURE_RATE = 48000                # USB mic 硬體限制（大多只支援 44.1k/48k）
-EMIT_RATE = 16000                   # 對外發送的取樣率：VAD 與 Whisper STT 都吃 16kHz；亦控制 payload 大小
-DOWNSAMPLE_FACTOR = CAPTURE_RATE // EMIT_RATE  # 3，48k stride-3 = 16k
-BLOCK_SAMPLES_EMIT = 480            # 30ms @ 16kHz（VAD frame 大小）
+# Audio pipeline 固定參數（採樣率對齊 Whisper / WebRTC VAD spec，不應改動）
+CAPTURE_RATE = 48000                # USB mic 硬體常見支援率
+EMIT_RATE = 16000                   # WebRTC VAD 與 Whisper 標準輸入率
+DOWNSAMPLE_FACTOR = CAPTURE_RATE // EMIT_RATE  # 3
+BLOCK_SAMPLES_EMIT = 480            # 30ms @ 16kHz（VAD frame size）
 BLOCK_SAMPLES_CAPTURE = BLOCK_SAMPLES_EMIT * DOWNSAMPLE_FACTOR  # 1440 samples @ 48kHz
-VAD_MODE = 3                        # 0-3，越高越積極過濾非語音；3 = 只認確定的 speech，避免被環境噪音觸發
-START_CONFIRM_FRAMES = 5            # 連續 N frame 為 speech 才確認 utterance 開始（5 = 150ms，抗短促噪音如鍵盤聲）
-MIN_SILENCE_MS = 900                # 連續靜音多久算 utterance 結束
-RMS_GATE = 500                      # int16 RMS 門檻：低於此值的 chunk 直接判為靜音（避免像風扇/冷氣等持續性低噪）
-MAX_UTTERANCE_MS = 60000            # 發言長度 60s，Opus @ 24kbps × 30s ≈ 90KB，遠低於 1MB broker cap
+
+# VAD / 能量參數預設值（適用一般辦公室 / 會議室；極端環境用 calibrate.py 校準後 override）
+VAD_MODE = 2                        # 0-3，2 為一般 voice IoT 預設（Mycroft 等）
+START_CONFIRM_FRAMES = 6            # 連續 N frame 為 speech 才確認 utterance start（6 = 180ms）
+                                    # 第一層防禦：短於 180ms 的瞬間（敲擊、椅子聲、輕觸）連 VAD 都不觸發
+MIN_SILENCE_MS = 800                # 連續靜音 N ms 後判定 utterance 結束
+RMS_GATE = 800                      # 啟動門檻：未 recording 時 RMS < 此值不送 VAD（防 false start）
+SILENCE_FLOOR = 700                 # recording 中 RMS < 此值強制計入 silence（環境噪音持續時也能正確 end）
+MIN_UTTERANCE_MS = 300              # 第二層防禦：< 300ms 必為瞬間雜音直接丟；保留「好/OK/對」等短回應
+                                    # 真噪音 (≥ 300ms) 交給 STT 的反幻覺過濾擋掉
+MAX_UTTERANCE_MS = 60000            # 單 utterance 上限：Opus @ 24kbps × 60s ≈ 180KB，安全低於 1MB MQTT cap
+
+# 若有 calibration.json（calibrate.py 產出）則覆蓋上方門檻參數
+CALIBRATION_PATH = os.path.join(THIS_DIR, "calibration.json")
+if os.path.exists(CALIBRATION_PATH):
+    with open(CALIBRATION_PATH) as _f:
+        _calib = json.load(_f)
+    for _k in ("VAD_MODE", "START_CONFIRM_FRAMES", "MIN_SILENCE_MS",
+               "RMS_GATE", "SILENCE_FLOOR", "MIN_UTTERANCE_MS"):
+        if _k in _calib:
+            globals()[_k] = _calib[_k]
+    print(f"Loaded calibration: VAD_MODE={VAD_MODE} RMS_GATE={RMS_GATE} "
+          f"SILENCE_FLOOR={SILENCE_FLOOR} MIN_SILENCE_MS={MIN_SILENCE_MS}")
+
 MAX_UTTERANCE_CHUNKS = (MAX_UTTERANCE_MS * EMIT_RATE // 1000) // BLOCK_SAMPLES_EMIT
+PRE_ROLL_FRAMES = START_CONFIRM_FRAMES + 2  # 多留 2 frame 餘裕，cover 軟開頭
 
 # Load TM 並實例化為 TD
 sys.path.insert(0, THIS_DIR)
@@ -103,6 +125,7 @@ def connect_broker_with_retry():
 
 # WebRTC VAD（輕量、無 ML runtime 依賴；ARMv8.0 RPi 也能跑）
 class WebRtcVadIterator:
+    """webrtcvad wrapper：回傳 {'start': sample_idx} / {'end': sample_idx} / None"""
     def __init__(self, sampling_rate, frame_samples,
                  mode, start_confirm_frames, min_silence_ms):
         self.vad = webrtcvad.Vad(mode)
@@ -163,10 +186,13 @@ def find_input_device():
             return i
     return None
 
-# Utterance state 
+# Utterance state
 recording = False
 utterance_start_ts = 0
 recording_chunk_count = 0
+
+# Pre-roll buffer：保留 utterance 觸發前的近期 audio，避免 START_CONFIRM_FRAMES 期間的開頭字被吃掉
+pre_roll_buffer = deque(maxlen=PRE_ROLL_FRAMES)
 
 # Streaming encoder：audio callback 不直接編碼（避免 utterance 越長收尾越久），改投遞 event 到 worker。
 # Worker 維持一個常駐 OggOpus encoder，每個 chunk 即進即編，end 時 close → publish。
@@ -207,11 +233,15 @@ def encoder_worker():
                 opus_bytes = buf.getvalue()
                 duration_ms = int(samples_written * 1000 / EMIT_RATE)
 
-                p = props.Properties(packettypes.PacketTypes.PUBLISH)
-                p.ContentType = "audio/ogg; codecs=opus"
-                p.UserProperty = [("ts", str(start_ts)), ("duration_ms", str(duration_ms))]
-                mqtt_client.publish(AUDIO_TOPIC, opus_bytes, qos=1, properties=p)
-                print(f"Utterance emitted: {duration_ms} ms, {len(opus_bytes)} bytes opus")
+                if duration_ms < MIN_UTTERANCE_MS:
+                    # 過短：通常是噪音瞬間誤觸發；丟棄可降低下游 STT 幻覺
+                    print(f"Utterance dropped (too short): {duration_ms} ms")
+                else:
+                    p = props.Properties(packettypes.PacketTypes.PUBLISH)
+                    p.ContentType = "audio/ogg; codecs=opus"
+                    p.UserProperty = [("ts", str(start_ts)), ("duration_ms", str(duration_ms))]
+                    mqtt_client.publish(AUDIO_TOPIC, opus_bytes, qos=1, properties=p)
+                    print(f"Utterance emitted: {duration_ms} ms, {len(opus_bytes)} bytes opus")
 
                 sf_file = None
                 buf = None
@@ -227,22 +257,32 @@ def on_audio_chunk(indata, frames, time_info, status):
 
     chunk_float_48k = indata[:, 0]                                    # mono float32 @ 48kHz
     chunk_int16_48k = (chunk_float_48k * 32767).astype(np.int16)
-    chunk_int16_16k = chunk_int16_48k[::DOWNSAMPLE_FACTOR]            # stride-3 降到 16kHz（VAD + emit 共用）
+    chunk_int16_16k = chunk_int16_48k[::DOWNSAMPLE_FACTOR]            # stride-3 降到 16kHz
 
-    # 能量門檻預過濾：低於 RMS_GATE 的 chunk 視為靜音不送 VAD（filter 持續性低噪）
+    # 持續維護 pre-roll ring buffer：start 觸發時用來補回 confirm 期間被吃掉的開頭 frame
+    pre_roll_buffer.append(chunk_int16_16k)
+
+    # 兩階段能量門檻：
+    #   未 recording → RMS_GATE 防 false start（背景噪音不觸發 utterance）
+    #   recording 中 → SILENCE_FLOOR 確保「真安靜」時能正確 end（避免持續低噪讓 VAD 永遠不 silence）
+    #   兩值之間的曖昧帶交給 WebRTC VAD 自行判斷，不誤切句中軟母音
     rms = int(np.sqrt(np.mean(chunk_int16_16k.astype(np.int32) ** 2)))
-    if rms < RMS_GATE:
-        speech_event = vad_iter(np.zeros_like(chunk_int16_16k))       # 餵零讓 VAD 計算 silence_frames
+    threshold = SILENCE_FLOOR if recording else RMS_GATE
+    if rms < threshold:
+        speech_event = vad_iter(np.zeros_like(chunk_int16_16k))
     else:
         speech_event = vad_iter(chunk_int16_16k)
 
     if speech_event and "start" in speech_event:
         recording = True
         utterance_start_ts = int(time.time() * 1000)
-        recording_chunk_count = 0
+        print(f"Speech detected, recording... (rms={rms})")
         encode_queue.put(("start", utterance_start_ts))
-
-    if recording:
+        # 倒帶：把 pre-roll buffer（含當前 chunk）依序餵進 encoder，補回 confirm 期間的開頭
+        for c in pre_roll_buffer:
+            encode_queue.put(("chunk", c))
+        recording_chunk_count = len(pre_roll_buffer)
+    elif recording:                                                    # 用 elif：剛 start 時 pre-roll 已含當前 chunk，不重複餵
         encode_queue.put(("chunk", chunk_int16_16k))
         recording_chunk_count += 1
         # 長獨白超過 hard cap：強制收尾並開新 utterance，保證單筆 payload 有上限
