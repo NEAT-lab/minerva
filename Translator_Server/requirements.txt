@@ -1,6 +1,6 @@
 flask>=3.0
 requests>=2.32
 torch>=2.1
-transformers>=4.40
+transformers>=4.40,<5
 sentencepiece>=0.2.0
 opencc-python-reimplemented>=0.1.7
