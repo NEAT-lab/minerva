@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minerva · Admin</title>
+<script src="lib/qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1c1c1c;
+    --muted: #6b6b6b;
+    --accent: #1e40af;
+    --border: #e5e5e0;
+    --danger: #dc2626;
+    --success: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+  }
+  header.top {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: white;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  header.top h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  header.top .actions a {
+    color: var(--accent); font-size: 0.9rem; text-decoration: none;
+    margin-left: 14px;
+  }
+
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  section { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 18px; }
+  section > h2 { margin: 0 0 12px; font-size: 1rem; font-weight: 600; }
+  section .count { color: var(--muted); font-weight: normal; font-size: 0.9rem; }
+
+  button.primary {
+    background: var(--accent); color: white; border: none;
+    padding: 8px 14px; border-radius: 4px; font-size: 0.9rem; cursor: pointer;
+  }
+  button.primary:hover { background: #1e3a8a; }
+  button.secondary {
+    background: white; color: var(--accent); border: 1px solid var(--accent);
+    padding: 6px 12px; border-radius: 4px; font-size: 0.85rem; cursor: pointer;
+  }
+  button.secondary:hover { background: #eff6ff; }
+  button.danger {
+    background: white; color: var(--danger); border: 1px solid var(--danger);
+    padding: 6px 12px; border-radius: 4px; font-size: 0.85rem; cursor: pointer;
+  }
+  button.danger:hover { background: #fee2e2; }
+
+  .room {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 14px; margin-bottom: 10px;
+  }
+  .room .head {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px; align-items: start;
+  }
+  .room .name { font-weight: 600; font-size: 1rem; }
+  .room .meta { color: var(--muted); font-size: 0.85rem; margin-top: 2px; font-family: ui-monospace, monospace; }
+  .room .actions { display: flex; gap: 6px; flex-shrink: 0; }
+  .room .attendees-panel { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border); }
+  .room.expanded .attendees-panel { display: block; }
+  .empty { color: var(--muted); font-style: italic; padding: 12px 0; }
+
+  .attendee {
+    display: grid; grid-template-columns: 96px 1fr; gap: 14px;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+    align-items: start;
+  }
+  .attendee:last-child { border-bottom: none; }
+  .attendee .qr { background: white; padding: 4px; border: 1px solid var(--border); border-radius: 4px; }
+  .attendee .qr canvas { display: block; }
+  .attendee .name { font-weight: 600; font-size: 0.95rem; }
+  .attendee .mic { color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, monospace; margin-bottom: 6px; }
+  .attendee .url-box { display: flex; gap: 6px; }
+  .attendee .url-box input {
+    flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 3px;
+    font-family: ui-monospace, monospace; font-size: 0.8rem;
+  }
+  .attendee .url-box button { white-space: nowrap; font-size: 0.8rem; padding: 5px 10px; }
+
+  .thing-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .thing {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; border: 1px solid var(--border); border-radius: 4px;
+    background: #fafaf7;
+  }
+  .thing .id { font-family: ui-monospace, monospace; font-size: 0.85rem; }
+  .thing .status { font-size: 0.85rem; font-weight: 600; }
+  .thing .status.on  { color: var(--success); }
+  .thing .status.off { color: var(--danger); }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Minerva · Admin</h1>
+  <div class="actions">
+    <a href="/admin/create.html">+ 建立會議室</a>
+    <a href="javascript:location.reload()">重整</a>
+  </div>
+</header>
+
+<main>
+  <section>
+    <h2>目前開啟的會議室 <span class="count" id="open-count"></span></h2>
+    <div id="open-rooms"></div>
+  </section>
+
+  <section>
+    <h2>裝置狀態 <span class="count" id="things-count"></span></h2>
+    <div class="thing-grid" id="things"></div>
+  </section>
+</main>
+
+<script>
+function micShort(id) { return id.replace(/^urn:uuid:/, "").slice(0, 8); }
+
+function renderQr(el, text, size) {
+  if (typeof QRCode === "undefined") {
+    el.textContent = "QR lib 未載入";
+    el.style.fontSize = "0.75rem";
+    el.style.color = "#dc2626";
+    return;
+  }
+  try {
+    el.innerHTML = "";
+    new QRCode(el, {
+      text,
+      width: size,
+      height: size,
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } catch (e) {
+    el.textContent = "QR 失敗";
+    console.error("[qr] render error:", e);
+  }
+}
+
+async function loadRooms() {
+  const list = document.getElementById("open-rooms");
+  const r = await fetch("/api/rooms?status=open");
+  const rooms = await r.json();
+  document.getElementById("open-count").textContent = `(${rooms.length})`;
+  if (rooms.length === 0) {
+    list.innerHTML = '<div class="empty">尚未開啟任何會議室。<a href="/admin/create.html">建立一場</a>。</div>';
+    return;
+  }
+  list.innerHTML = "";
+  for (const room of rooms) {
+    const div = document.createElement("div");
+    div.className = "room";
+    const created = new Date(room.created_at).toLocaleString();
+    div.innerHTML = `
+      <div class="head">
+        <div>
+          <div class="name">${room.name || "(未命名)"}</div>
+          <div class="meta">room_id=${room.room_id.slice(0, 8)} · 建立於 ${created} · ${room.attendee_count} 位與會者</div>
+        </div>
+        <div class="actions">
+          <button class="secondary toggle">顯示連結</button>
+          <button class="danger close">結束會議</button>
+        </div>
+      </div>
+      <div class="attendees-panel"><div class="attendee-list"></div></div>
+    `;
+    list.appendChild(div);
+
+    div.querySelector(".toggle").onclick = async (e) => {
+      const panel = div.querySelector(".attendees-panel");
+      const expanded = div.classList.toggle("expanded");
+      e.target.textContent = expanded ? "隱藏連結" : "顯示連結";
+      if (expanded && !panel.dataset.loaded) {
+        await renderAttendees(div, room.room_id);
+        panel.dataset.loaded = "1";
+      }
+    };
+    div.querySelector(".close").onclick = async (e) => {
+      if (!confirm(`確定要結束「${room.name || "(未命名)"}」？`)) return;
+      e.target.disabled = true;
+      const resp = await fetch(`/api/rooms/${room.room_id}/close`, { method: "POST" });
+      if (resp.ok) {
+        loadRooms();
+      } else {
+        alert("結束失敗：" + (await resp.text()));
+        e.target.disabled = false;
+      }
+    };
+  }
+}
+
+async function renderAttendees(roomDiv, room_id) {
+  const r = await fetch(`/api/rooms/${room_id}/attendees`);
+  const attendees = await r.json();
+  const list = roomDiv.querySelector(".attendee-list");
+  list.innerHTML = "";
+  for (const att of attendees) {
+    const card = document.createElement("div");
+    card.className = "attendee";
+    card.innerHTML = `
+      <div class="qr"></div>
+      <div>
+        <div class="name">${att.name}</div>
+        <div class="mic">mic ${micShort(att.mic_id)}</div>
+        <div class="url-box">
+          <input type="text" readonly value="${att.magic_url}">
+          <button class="secondary copy">複製</button>
+          <button class="secondary open">開啟</button>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+    renderQr(card.querySelector(".qr"), att.magic_url, 96);
+    const cp = card.querySelector(".copy");
+    cp.onclick = () => {
+      navigator.clipboard?.writeText(att.magic_url);
+      cp.textContent = "已複製";
+      setTimeout(() => (cp.textContent = "複製"), 1200);
+    };
+    card.querySelector(".open").onclick = () => window.open(att.magic_url, "_blank");
+  }
+}
+
+async function loadThings() {
+  const r = await fetch("/api/things");
+  const things = await r.json();
+  document.getElementById("things-count").textContent = `(${things.length})`;
+  const grid = document.getElementById("things");
+  grid.innerHTML = "";
+  for (const t of things) {
+    const el = document.createElement("div");
+    el.className = "thing";
+    el.innerHTML = `
+      <span class="id">${t.td.title ?? t.td.id}</span>
+      <span class="status ${t.online ? "on" : "off"}">${t.online ? "online" : "offline"}</span>
+    `;
+    grid.appendChild(el);
+  }
+}
+
+loadRooms();
+loadThings();
+// 簡單 polling 每 5 秒更新一次裝置狀態（後續可改 SSE /api/things/stream）
+setInterval(loadThings, 5000);
+</script>
+</body>
+</html>

@@ -6,7 +6,7 @@
   "@type": "ssn:System",
   "id": "urn:uuid:translator-001",
   "title": "Translator Node",
-  "description": "Generic text translation service. Accepts source text plus source/target language tags and returns translated text. Reference implementation uses Facebook NLLB-200 with OpenCC s2t for Simplified→Traditional Chinese normalization.",
+  "description": "Generic text translation service. Accepts source text plus source/target language tags and returns translated text. Reference implementation uses Helsinki-NLP OPUS-MT (en→zh) with OpenCC s2twp for Simplified→Traditional Chinese (Taiwan) normalization including locale-specific phrase substitution.",
   "version": { "instance": "0.1.0" },
 
   "securityDefinitions": {
