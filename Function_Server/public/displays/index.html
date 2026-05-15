@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minerva 即時字幕</title>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1c1c1c;
+    --muted: #6b6b6b;
+    --accent: #1e40af;
+    --self-bg: #fef3c7;
+    --other-bg: #ffffff;
+    --border: #e5e5e0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+  }
+  header.top {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: white;
+    position: sticky; top: 0;
+  }
+  header.top h1 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+  header.top .me { color: var(--muted); font-size: 0.9rem; }
+  header.top .status { font-size: 0.8rem; color: var(--muted); }
+  header.top .status.ok { color: #16a34a; }
+  header.top .status.bad { color: #dc2626; }
+
+  main { padding: 16px 12px; max-width: 760px; margin: 0 auto; }
+  .row {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    background: var(--other-bg);
+  }
+  .row.self { background: var(--self-bg); border-color: #f59e0b33; }
+  .row > header {
+    display: flex; justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 0.85rem; color: var(--muted);
+  }
+  .row .speaker { color: var(--fg); font-weight: 600; }
+  .row .en { font-size: 1rem; }
+  .row .zh { font-size: 1.15rem; margin-top: 4px; }
+  .row.self .zh { display: none; }
+  .row .recast { margin-top: 6px; font-size: 0.9rem; color: var(--muted); font-style: italic; }
+  .row.other .recast { display: none; }
+
+  .row .corrections { list-style: none; margin: 6px 0 0; padding: 0; }
+  .row.other .corrections { display: none; }
+  .row .corrections li {
+    font-size: 0.8rem;
+    color: #92400e;
+    padding: 2px 0 2px 14px;
+    position: relative;
+  }
+  .row .corrections li::before {
+    content: "•";
+    position: absolute; left: 4px; color: #d97706;
+  }
+  .row .corrections .diff {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #1c1c1c;
+  }
+  .row .corrections .diff .wrong {
+    text-decoration: line-through;
+    color: #b91c1c;
+  }
+  .row .corrections .diff .arrow { margin: 0 4px; color: var(--muted); }
+  .row .corrections .diff .correct { color: #15803d; }
+  .row .corrections .reason { color: #92400e; margin-left: 6px; }
+
+  .row .hints { margin: 8px 0 0; }
+  .row .hints:empty { display: none; }
+  .row .hint-card {
+    border: 1px solid #c7d2fe;
+    background: #eef2ff;
+    border-radius: 6px;
+    padding: 6px 10px;
+    margin: 4px 0;
+    font-size: 0.85rem;
+  }
+  .row .hint-card .term {
+    font-weight: 600;
+    color: #1e3a8a;
+    margin-bottom: 3px;
+  }
+  .row .hint-card .term .term-zh {
+    color: var(--muted);
+    font-weight: 400;
+    margin-left: 6px;
+    font-size: 0.8rem;
+  }
+  .row .hint-card ul {
+    list-style: disc;
+    margin: 2px 0 0 18px;
+    padding: 0;
+    color: #1c1c1c;
+  }
+  .row .hint-card ul li { padding: 1px 0; }
+
+  .row .replies { list-style: none; margin: 8px 0 0; padding: 0; }
+  .row.self .replies { display: none; }
+  .row .replies li {
+    padding: 6px 10px;
+    margin: 4px 0;
+    background: #f3f4f6;
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    font-size: 0.9rem;
+    color: #1c1c1c;
+  }
+
+  .empty { color: var(--muted); text-align: center; padding: 60px 12px; }
+  .ended {
+    background: #fee2e2; color: #991b1b;
+    padding: 14px; text-align: center; border-radius: 8px; margin: 0 0 16px;
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1 id="room-name">…</h1>
+    <span class="me" id="self-name"></span>
+  </div>
+  <span class="status" id="status">連線中…</span>
+</header>
+<main>
+  <div id="ended" class="ended" hidden>會議已結束。</div>
+  <div id="captions"></div>
+  <div id="empty" class="empty">等待發言…</div>
+</main>
+
+<script>
+const [, , ROOM_ID, TOKEN] = location.pathname.split("/");
+const captions = document.getElementById("captions");
+const empty = document.getElementById("empty");
+const endedBanner = document.getElementById("ended");
+const statusEl = document.getElementById("status");
+const rows = new Map();
+let SELF = null;
+
+function setStatus(text, cls) {
+  statusEl.textContent = text;
+  statusEl.className = "status" + (cls ? " " + cls : "");
+}
+
+function ensureRow(d) {
+  let row = rows.get(d.utterance_id);
+  if (row) return row;
+  const isSelf = d.speaker_attendee_id === SELF.attendee_id;
+  row = document.createElement("article");
+  row.className = "row " + (isSelf ? "self" : "other");
+  const speaker = isSelf ? "我" : (d.speaker_name ?? "?");
+  const time = new Date(d.ts).toLocaleTimeString();
+  row.innerHTML = `
+    <header><span class="speaker">${speaker}</span><time>${time}</time></header>
+    <div class="en"></div>
+    <div class="zh"></div>
+    <div class="recast"></div>
+    <ul class="corrections"></ul>
+    <div class="hints"></div>
+    <ul class="replies"></ul>
+  `;
+  const wasNearBottom = isNearBottom();
+  captions.appendChild(row);
+  rows.set(d.utterance_id, row);
+  empty.hidden = true;
+  if (wasNearBottom) scrollToBottom();
+  return row;
+}
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function renderCorrections(row, list) {
+  const ul = row.querySelector(".corrections");
+  ul.innerHTML = "";
+  if (!Array.isArray(list)) return;
+  for (const c of list) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      `<span class="diff">` +
+        `<span class="wrong">${escapeHtml(c.wrong)}</span>` +
+        `<span class="arrow">→</span>` +
+        `<span class="correct">${escapeHtml(c.correct)}</span>` +
+      `</span>` +
+      `<span class="reason">${escapeHtml(c.reason)}</span>`;
+    ul.appendChild(li);
+  }
+}
+
+function renderHints(row, list) {
+  const box = row.querySelector(".hints");
+  box.innerHTML = "";
+  if (!Array.isArray(list)) return;
+  for (const h of list) {
+    const card = document.createElement("div");
+    card.className = "hint-card";
+    const points = Array.isArray(h.points) ? h.points : [];
+    card.innerHTML =
+      `<div class="term">${escapeHtml(h.term_en)}` +
+        (h.term_zh ? `<span class="term-zh">${escapeHtml(h.term_zh)}</span>` : "") +
+      `</div>` +
+      `<ul>${points.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`;
+    box.appendChild(card);
+  }
+}
+
+function isNearBottom() {
+  return window.innerHeight + window.scrollY >= document.body.offsetHeight - 120;
+}
+function scrollToBottom() {
+  requestAnimationFrame(() =>
+    window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })
+  );
+}
+
+async function init() {
+  const r = await fetch(`/api/displays/${ROOM_ID}/${TOKEN}/self`);
+  if (!r.ok) {
+    document.body.innerHTML = '<p style="padding:40px;text-align:center;color:#991b1b">連結無效或已過期。</p>';
+    return;
+  }
+  SELF = await r.json();
+  document.getElementById("room-name").textContent = SELF.room_name || "(未命名會議室)";
+  document.getElementById("self-name").textContent = `我:${SELF.name}`;
+
+  if (SELF.room_closed_at) {
+    endedBanner.hidden = false;
+    setStatus("會議已結束", "bad");
+  }
+
+  // 先拉歷史 utterances 重建畫面（避免重整就掉所有對話）
+  try {
+    const hist = await fetch(`/api/displays/${ROOM_ID}/${TOKEN}/history`).then(r => r.json());
+    for (const u of hist) {
+      const row = ensureRow(u);
+      if (u.en_text)  row.querySelector(".en").textContent = u.en_text;
+      if (u.zh_text)  row.querySelector(".zh").textContent = u.zh_text;
+      if (u.recast)   row.querySelector(".recast").textContent = "潤飾：" + u.recast;
+      if (Array.isArray(u.grammar_corrections)) renderCorrections(row, u.grammar_corrections);
+      if (Array.isArray(u.keyword_hints))       renderHints(row, u.keyword_hints);
+      if (Array.isArray(u.replies) && row.classList.contains("other")) {
+        const repl = row.querySelector(".replies");
+        repl.innerHTML = "";
+        for (const reply of u.replies) {
+          const li = document.createElement("li");
+          li.textContent = reply;
+          repl.appendChild(li);
+        }
+      }
+    }
+    if (hist.length > 0) scrollToBottom();
+  } catch (e) {
+    console.error("[display] history fetch failed:", e);
+  }
+
+  // 會議若已關閉就不掛 SSE
+  if (SELF.room_closed_at) return;
+
+  const es = new EventSource(`/api/displays/${ROOM_ID}/${TOKEN}/stream`);
+  es.onopen = () => setStatus("已連線", "ok");
+  es.onerror = () => setStatus("連線中斷，重試中…", "bad");
+
+  es.addEventListener("utterance_created", (e) => {
+    ensureRow(JSON.parse(e.data));
+  });
+  es.addEventListener("stt", (e) => {
+    const d = JSON.parse(e.data);
+    const row = rows.get(d.utterance_id);
+    if (row) row.querySelector(".en").textContent = d.en_text;
+  });
+  es.addEventListener("translation", (e) => {
+    const d = JSON.parse(e.data);
+    const row = rows.get(d.utterance_id);
+    if (row) row.querySelector(".zh").textContent = d.zh_text;
+  });
+  es.addEventListener("analysis", (e) => {
+    // streaming：payload 可能只帶部分欄位，merge 而非覆蓋
+    const d = JSON.parse(e.data);
+    const row = rows.get(d.utterance_id);
+    if (!row) return;
+    const wasNearBottom = isNearBottom();
+    if (typeof d.recast === "string") {
+      row.querySelector(".recast").textContent = "潤飾：" + d.recast;
+    }
+    if (Array.isArray(d.grammar_corrections)) {
+      renderCorrections(row, d.grammar_corrections);
+    }
+    if (Array.isArray(d.keyword_hints)) {
+      renderHints(row, d.keyword_hints);
+    }
+    if (Array.isArray(d.replies) && row.classList.contains("other")) {
+      const repl = row.querySelector(".replies");
+      repl.innerHTML = "";
+      for (const reply of d.replies) {
+        const li = document.createElement("li");
+        li.textContent = reply;
+        repl.appendChild(li);
+      }
+    }
+    if (wasNearBottom) scrollToBottom();
+  });
+  es.addEventListener("meeting_ended", () => {
+    setStatus("會議已結束", "bad");
+    endedBanner.hidden = false;
+    es.close();
+  });
+}
+
+init();
+</script>
+</body>
+</html>
