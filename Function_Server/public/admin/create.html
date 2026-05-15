@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minerva · 建立會議室</title>
+<script src="lib/qrcode.min.js"></script>
+<style>
+  :root {
+    --bg: #fafaf7;
+    --fg: #1c1c1c;
+    --muted: #6b6b6b;
+    --accent: #1e40af;
+    --border: #e5e5e0;
+    --danger: #dc2626;
+    --success: #16a34a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.5;
+  }
+  header.top {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--border);
+    background: white;
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  header.top h1 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+  header.top a { color: var(--muted); font-size: 0.9rem; text-decoration: none; }
+  header.top a:hover { color: var(--accent); }
+
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+
+  section { background: white; border: 1px solid var(--border); border-radius: 8px; padding: 18px 20px; margin-bottom: 18px; }
+  section h2 { margin: 0 0 14px; font-size: 1rem; font-weight: 600; }
+
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+  input[type="text"], select {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px;
+    font-size: 0.95rem; background: white;
+  }
+  input[type="text"]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+  .mic-row {
+    display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end;
+    padding: 10px 0; border-bottom: 1px dashed var(--border);
+  }
+  .mic-row:last-of-type { border-bottom: none; }
+  .mic-row button.remove {
+    background: white; border: 1px solid var(--border); color: var(--muted);
+    padding: 8px 12px; border-radius: 4px; cursor: pointer; height: 36px;
+  }
+  .mic-row button.remove:hover { color: var(--danger); border-color: var(--danger); }
+
+  button.primary {
+    background: var(--accent); color: white; border: none;
+    padding: 10px 18px; border-radius: 4px; font-size: 0.95rem; cursor: pointer;
+  }
+  button.primary:hover { background: #1e3a8a; }
+  button.primary:disabled { background: #93a4d4; cursor: not-allowed; }
+  button.secondary {
+    background: white; color: var(--accent); border: 1px solid var(--accent);
+    padding: 8px 14px; border-radius: 4px; font-size: 0.9rem; cursor: pointer;
+  }
+  button.secondary:hover { background: #eff6ff; }
+
+  .row-actions { display: flex; justify-content: space-between; align-items: center; margin-top: 14px; }
+  .err { color: var(--danger); font-size: 0.9rem; margin-top: 8px; }
+  .err:empty { display: none; }
+  .info { color: var(--muted); font-size: 0.85rem; }
+
+  .attendee {
+    display: grid; grid-template-columns: 120px 1fr; gap: 16px; align-items: start;
+    padding: 16px 0; border-bottom: 1px solid var(--border);
+  }
+  .attendee:last-child { border-bottom: none; }
+  .attendee .qr { background: white; padding: 6px; border: 1px solid var(--border); border-radius: 4px; }
+  .attendee .qr canvas { display: block; }
+  .attendee .meta { font-size: 0.9rem; }
+  .attendee .meta .name { font-weight: 600; font-size: 1rem; }
+  .attendee .meta .mic { color: var(--muted); font-size: 0.8rem; margin-bottom: 8px; font-family: ui-monospace, monospace; }
+  .attendee .url-box { display: flex; gap: 6px; margin-top: 8px; }
+  .attendee .url-box input {
+    flex: 1; font-family: ui-monospace, monospace; font-size: 0.85rem;
+  }
+  .attendee .url-box button { white-space: nowrap; }
+
+  #result { display: none; }
+  #result.show { display: block; }
+
+  .empty-mics { color: var(--muted); font-style: italic; padding: 12px 0; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Minerva · 建立會議室</h1>
+  <a href="/admin/">← 回 Dashboard</a>
+</header>
+
+<main>
+  <section id="form-section">
+    <h2>會議基本資訊</h2>
+
+    <label for="room-name">會議室名稱</label>
+    <input id="room-name" type="text" placeholder="例如：NEAT-Lab Weekly" autocomplete="off">
+
+    <h2 style="margin-top: 20px;">參與麥克風 <span class="info" id="mic-count">(0)</span></h2>
+    <div id="mic-rows"></div>
+    <div id="empty-mics" class="empty-mics" hidden>沒有可用的麥克風。請確認 mic 已上線。</div>
+
+    <div class="row-actions">
+      <button type="button" class="secondary" id="add-mic">+ 新增麥克風</button>
+      <button type="button" class="primary" id="submit">建立會議室</button>
+    </div>
+
+    <div class="err" id="form-err"></div>
+  </section>
+
+  <section id="result">
+    <h2>會議室已建立</h2>
+    <p class="info" id="result-meta"></p>
+    <div id="attendees"></div>
+    <div class="row-actions" style="gap: 10px;">
+      <a href="/admin/" class="secondary" style="text-decoration: none; padding: 8px 14px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); background: white;">回 Dashboard</a>
+      <a href="/admin/create.html" class="secondary" style="text-decoration: none; padding: 8px 14px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); background: white;">建立另一場</a>
+    </div>
+  </section>
+</main>
+
+<script>
+let availableMics = []; // [{mic_id, title}]
+const rowsEl = document.getElementById("mic-rows");
+const errEl = document.getElementById("form-err");
+const submitBtn = document.getElementById("submit");
+
+async function loadMics() {
+  const r = await fetch("/api/mics/available");
+  availableMics = await r.json();
+  document.getElementById("empty-mics").hidden = availableMics.length > 0;
+  updateMicCount();
+}
+
+function micShort(mic_id) {
+  return mic_id.replace(/^urn:uuid:/, "").slice(0, 8);
+}
+
+function renderQr(el, text, size) {
+  if (typeof QRCode === "undefined") {
+    el.textContent = "QR lib 未載入";
+    el.style.fontSize = "0.75rem";
+    el.style.color = "#dc2626";
+    return;
+  }
+  try {
+    el.innerHTML = "";
+    new QRCode(el, {
+      text,
+      width: size,
+      height: size,
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+  } catch (e) {
+    el.textContent = "QR 失敗";
+    console.error("[qr] render error:", e);
+  }
+}
+
+function getSelectedMicIds(exceptRow) {
+  return Array.from(rowsEl.querySelectorAll(".mic-row"))
+    .filter(r => r !== exceptRow)
+    .map(r => r.querySelector(".mic-select").value)
+    .filter(Boolean);
+}
+
+function refreshSelectOptions() {
+  for (const row of rowsEl.querySelectorAll(".mic-row")) {
+    const sel = row.querySelector(".mic-select");
+    const current = sel.value;
+    const used = new Set(getSelectedMicIds(row));
+    sel.innerHTML = '<option value="">— 選擇 mic —</option>';
+    for (const m of availableMics) {
+      if (used.has(m.mic_id) && m.mic_id !== current) continue;
+      const opt = document.createElement("option");
+      opt.value = m.mic_id;
+      opt.textContent = `${micShort(m.mic_id)} (${m.title ?? "Mic"})`;
+      if (m.mic_id === current) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+}
+
+function updateMicCount() {
+  document.getElementById("mic-count").textContent = `(${rowsEl.children.length})`;
+}
+
+function addMicRow() {
+  if (availableMics.length === 0) return;
+  const row = document.createElement("div");
+  row.className = "mic-row";
+  row.innerHTML = `
+    <div>
+      <label>麥克風</label>
+      <select class="mic-select"></select>
+    </div>
+    <div>
+      <label>使用者名稱</label>
+      <input type="text" class="user-name" placeholder="例如：Alice" autocomplete="off">
+    </div>
+    <button type="button" class="remove">移除</button>
+  `;
+  rowsEl.appendChild(row);
+  row.querySelector(".mic-select").addEventListener("change", refreshSelectOptions);
+  row.querySelector(".remove").addEventListener("click", () => {
+    row.remove();
+    refreshSelectOptions();
+    updateMicCount();
+  });
+  refreshSelectOptions();
+  updateMicCount();
+}
+
+async function submit() {
+  errEl.textContent = "";
+  const name = document.getElementById("room-name").value.trim();
+  const mics = [];
+  for (const row of rowsEl.querySelectorAll(".mic-row")) {
+    const mic_id = row.querySelector(".mic-select").value;
+    const user_name = row.querySelector(".user-name").value.trim();
+    if (!mic_id || !user_name) {
+      errEl.textContent = "每隻麥克風都要選 mic 並填使用者名稱。";
+      return;
+    }
+    mics.push({ mic_id, user_name });
+  }
+  if (mics.length === 0) {
+    errEl.textContent = "至少要加一隻麥克風。";
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = "建立中…";
+  try {
+    const r = await fetch("/api/rooms", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, mics }),
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      let msg = body.error ?? `HTTP ${r.status}`;
+      if (body.mic_ids?.length) msg += ` (${body.mic_ids.map(micShort).join(", ")})`;
+      errEl.textContent = `建立失敗：${msg}`;
+      return;
+    }
+    const data = await r.json();
+    showResult(name, data);
+  } catch (e) {
+    errEl.textContent = `建立失敗：${e.message}`;
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = "建立會議室";
+  }
+}
+
+function showResult(name, data) {
+  document.getElementById("form-section").hidden = true;
+  const result = document.getElementById("result");
+  result.classList.add("show");
+  document.getElementById("result-meta").textContent =
+    `${name || "(未命名)"} · room_id=${data.room_id} · ${data.attendees.length} 位與會者`;
+  const list = document.getElementById("attendees");
+  list.innerHTML = "";
+  for (const att of data.attendees) {
+    const card = document.createElement("div");
+    card.className = "attendee";
+    card.innerHTML = `
+      <div class="qr"></div>
+      <div class="meta">
+        <div class="name">${att.name}</div>
+        <div class="mic">mic ${micShort(att.mic_id)}</div>
+        <div class="url-box">
+          <input type="text" readonly value="${att.magic_url}">
+          <button class="secondary copy">複製</button>
+          <button class="secondary open">開啟</button>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+    renderQr(card.querySelector(".qr"), att.magic_url, 120);
+    const copyBtn = card.querySelector(".copy");
+    copyBtn.onclick = () => {
+      navigator.clipboard?.writeText(att.magic_url);
+      copyBtn.textContent = "已複製";
+      setTimeout(() => (copyBtn.textContent = "複製"), 1200);
+    };
+    card.querySelector(".open").onclick = () => window.open(att.magic_url, "_blank");
+  }
+}
+
+document.getElementById("add-mic").addEventListener("click", addMicRow);
+document.getElementById("submit").addEventListener("click", submit);
+
+loadMics().then(() => {
+  if (availableMics.length > 0) addMicRow();
+});
+</script>
+</body>
+</html>

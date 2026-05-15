@@ -1,0 +1,19 @@
+{
+  "name": "minerva-function-server",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "fs_node.js",
+  "scripts": {
+    "start": "node fs_node.js",
+    "init-db": "node scripts/init-db.js"
+  },
+  "dependencies": {
+    "@node-wot/binding-http": "^0.9.2",
+    "@node-wot/binding-mqtt": "^0.9.2",
+    "@node-wot/core": "^0.9.2",
+    "better-sqlite3": "^11.5.0",
+    "express": "^4.21.1",
+    "mqtt": "^5.15.1"
+  }
+}
