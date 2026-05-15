@@ -1,4 +1,11 @@
 *.db
+*.sqlite*
 __pycache__
 *_env
 *.log
+.node_id
+*.onnx
+venv
+calibration.json
+node_modules/
+docs/
