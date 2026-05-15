@@ -13,7 +13,7 @@ export async function fetchTD(thingId) {
 }
 
 // 從 TD 的 affordance forms 抽 HTTP base URL（給 /health probe 用）。
-// Mic TD 全部 form 為 mqtt:// → 回 null，由 §4.6 MQTT LWT presence 處理。
+// Mic TD 全部 form 為 mqtt://，回 null；由 MQTT LWT presence 處理。
 export function findHttpBase(td) {
   const affordanceGroups = [td.actions, td.properties, td.events];
   for (const group of affordanceGroups) {

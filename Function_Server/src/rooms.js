@@ -1,5 +1,4 @@
 // Rooms API：createRoom / closeRoom / listRooms / listAvailableMics + FS 重啟恢復。
-// 對應 ARCH.md §6（時序圖）、§9.4（REST）、§13.7（D7 mic 排他性）。
 
 import { randomUUID } from "node:crypto";
 import { db, stmt, findMicConflicts } from "./db.js";
@@ -47,7 +46,7 @@ export function listRooms({ status } = {}) {
 }
 
 // Workaround：node-wot 0.9 binding-mqtt 從 form.href 的 url.pathname 抓 subscribe topic filter；
-// 若 pathname 為空且 mqv:topic 有值，filter 變空字串 → broker 拒絕 → 'Connection closed'。
+// 若 pathname 為空且 mqv:topic 有值，filter 會變空字串，broker 拒絕並斷線（'Connection closed'）。
 // 把 mqv:topic 補進 href path，binding 即可正確 subscribe。
 function patchMicTdForNodeWot(td) {
   for (const form of td.events?.audio?.forms ?? []) {
@@ -97,19 +96,19 @@ export async function createRoom({ name, mics }) {
     throw httpError(400, "duplicate_mic_in_request");
   }
 
-  // mic online 驗證（§6 step 1）
+  // mic online 驗證
   const offline = micIds.filter((id) => onlineStatus.get(id) !== true);
   if (offline.length) {
     throw httpError(422, "mic_offline", { mic_ids: offline });
   }
 
-  // mic 排他性 SQL 檢查（§6 step 2、§13.7 D7）
+  // mic 排他性 SQL 檢查
   const conflicts = findMicConflicts(micIds);
   if (conflicts.length) {
     throw httpError(422, "mic_in_use", { mic_ids: conflicts });
   }
 
-  // INSERT room + attendees in transaction（§6 step 4）
+  // INSERT room + attendees in transaction
   const room_id = randomUUID();
   const now = Date.now();
   const attendees = [];
@@ -133,7 +132,7 @@ export async function createRoom({ name, mics }) {
     }
   })();
 
-  // consume mic + subscribeEvent（§6 step 5）
+  // consume mic + subscribeEvent
   const subs = new Set();
   try {
     for (const att of attendees) {
@@ -147,7 +146,7 @@ export async function createRoom({ name, mics }) {
       subs.add(sub);
     }
   } catch (err) {
-    // 任一隻 mic 訂閱失敗 → rollback：停掉已建 subs、清 in-memory、刪 DB row
+    // 任一隻 mic 訂閱失敗時 rollback：停掉已建 subs、清 in-memory、刪 DB row
     for (const s of subs) {
       try {
         await s.stop();
@@ -212,7 +211,7 @@ export async function closeRoom(room_id) {
   return { ok: true };
 }
 
-// FS 重啟：從 DB 讀回 open rooms，逐一 consume mic + subscribeEvent（§5.2 / §9.3）
+// FS 重啟：從 DB 讀回 open rooms，逐一 consume mic + subscribeEvent
 export async function rebuildOnStartup() {
   const openRooms = stmt.listOpenRooms.all();
   for (const room of openRooms) {

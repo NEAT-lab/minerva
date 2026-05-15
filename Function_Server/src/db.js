@@ -144,7 +144,7 @@ export const stmt = {
   ),
 };
 
-// Mic 排他性檢查（§13.7 D7）：mic_ids 中已在某 open room 之 attendees 的子集
+// Mic 排他性檢查：mic_ids 中已在某 open room 之 attendees 的子集
 export function findMicConflicts(micIds) {
   if (micIds.length === 0) return [];
   const placeholders = micIds.map(() => "?").join(",");
