@@ -1,5 +1,5 @@
 // Function Server entry point。
-// 載入順序：servient（top-level await 啟動）→ presence → rooms → Express。
+// 載入順序：servient（top-level await 啟動）、presence、rooms、Express。
 
 import express from "express";
 import path from "node:path";
@@ -48,9 +48,9 @@ await rebuildOnStartup();
 const app = express();
 app.use(express.json());
 
-// --- Admin Web UI（§9.2 / §14.2 M6）---
+// --- Admin Web UI ---
 // 信任網路內部使用，無 auth；論文小專案不引入 admin 帳號系統。
-// express.static 預設 redirect /admin → /admin/、自動 serve /admin/ 的 index.html。
+// express.static 預設 redirect /admin 到 /admin/、自動 serve /admin/ 的 index.html。
 app.use("/admin", express.static(path.join(__dirname, "public/admin")));
 
 // admin 端列某 room 的所有 attendee（含重組 magic URL，方便重看連結）
@@ -68,7 +68,7 @@ app.get("/api/rooms/:id/attendees", (req, res) => {
   );
 });
 
-// --- Display web app（Magic Link 頁，§9.2 / §D / §E）---
+// --- Display web app（Magic Link 頁）---
 app.get("/displays/:room/:token", (req, res) => {
   const att = verifyToken(req.params.room, req.params.token);
   if (!att) return res.status(403).send("Invalid or expired magic link.");
@@ -120,7 +120,7 @@ app.get("/api/displays/:room/:token/stream", (req, res) => {
     "X-Accel-Buffering": "no",
   });
   res.write(`: connected as ${att.name}\n\n`);
-  // room 已關閉 → 立刻推 meeting_ended 並結束，不掛長連線
+  // room 已關閉時立刻推 meeting_ended 並結束，不掛長連線
   if (room?.closed_at != null) {
     res.write(
       `event: meeting_ended\ndata: ${JSON.stringify({ closed_at: room.closed_at })}\n\n`

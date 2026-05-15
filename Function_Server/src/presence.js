@@ -1,4 +1,4 @@
-// Hybrid presence (§4.6 + §4.7 + §4.8)：
+// Hybrid presence：
 //   - Mic：MQTT LWT 訂閱 `presence/{mic_id}`
 //   - STT / Translator / Ollama Wrapper：HTTP /health probe loop（15s）
 // 統一寫入單一 Map<thing_id, boolean>；變化透過 listener 廣播。
@@ -26,7 +26,7 @@ function setOnline(thingId, online) {
   for (const fn of listeners) fn(thingId, online, prev);
 }
 
-// (a) MQTT presence/+ subscribe — for Mic（§4.6）
+// (a) MQTT presence/+ subscribe — for Mic
 export function startMqttPresence() {
   const client = mqtt.connect(BROKER_URL, {
     clientId: `fs_node_presence_${Date.now()}`,
@@ -51,7 +51,7 @@ export function startMqttPresence() {
   return client;
 }
 
-// (b) HTTP /health probe loop — for STT / Tr / Olw（§4.7）
+// (b) HTTP /health probe loop — for STT / Tr / Olw
 async function probeAll() {
   let tds;
   try {

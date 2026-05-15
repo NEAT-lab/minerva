@@ -1,11 +1,9 @@
-// M4 orchestrator：handleUtterance 從 fs_simulator.py 的單機 pipeline 移植到 FS。
-// 流程（對應 ARCH.md §7）：
+// Orchestrator：handleUtterance 串起一輪 utterance 的後端流水線。
+// 流程：
 //   1. INSERT utterance row（拿 utterance_id）
-//   2. STT 同步等回 → UPDATE en_text + stt_ms
-//   3. 並行：Translator（en→zh_Hant）+ Ollama（mega-prompt，含 5 句 speaker-tagged prior context）
-//   4. 各階段 *_ms 寫 DB；錯誤寫 error_log（多階段失敗以 " | " 串接）
-//
-// MEGA_SYSTEM_PROMPT / OLLAMA_OPTIONS 為 fs_simulator 經驗值，原樣搬過來。
+//   2. STT 同步等回後 UPDATE en_text + stt_ms
+//   3. 並行跑 Translator（en 至 zh_Hant）與 Ollama（mega-prompt，含 5 句 speaker-tagged prior context）
+//   4. 各階段 *_ms 寫 DB；錯誤寫 error_log（多階段失敗以 "|" 串接）
 
 import { stmt } from "./db.js";
 import { wot } from "./servient.js";
@@ -18,11 +16,10 @@ const STT_LANGUAGE = "en";
 const SRC_NLLB = "eng_Latn";
 const TGT_NLLB = "zho_Hant";
 const OLLAMA_MODEL = "qwen3:8b";
-// Qwen3:8b 是 hybrid thinking model，用 top-level `think: false`（Ollama 0.24+）關推理。
-// 8B 比 14B 約快 1.5-2x；關了 thinking 後 1500 tokens 足夠 4 欄輸出。
+// Qwen3:8b 是 hybrid thinking model，用 top-level `think: false`（Ollama 0.24.0）關推理。
 const OLLAMA_OPTIONS = { num_predict: 1500, temperature: 0.3 };
 
-// 用 JSON Schema 取代 format:"json"——強制每個 grammar_correction 必有 reason 欄位。
+// 用 JSON Schema 取代 format:"json" 強制每個 grammar_correction 必有 reason 欄位。
 // 避免 Case 2 出現 reason:undefined 的問題。
 const RESPONSE_SCHEMA = {
   type: "object",
@@ -65,7 +62,7 @@ const TR_ID = "urn:uuid:translator-001";
 const OLW_ID = "urn:uuid:ollama-wrapper-001";
 
 let stt, tr, olw;
-// STT 的 raw form 用於 binary call（見 callStt 註解）；仍 wot.consume 對齊 §0 「4 first-class Things」
+// STT 的 raw form 用於 binary call（見 callStt 註解）；仍 wot.consume 對齊「4 first-class Things」
 let sttForm;
 // Ollama chat 用 raw fetch 做 streaming（node-wot 0.9 不支援 streaming response）
 let olwChatForm;
@@ -84,12 +81,11 @@ export async function consumeSharedThings() {
     wot.consume(olwTd),
   ]);
   console.log("[orchestrator] consumed STT / Translator / Ollama");
-  // 自己預載 model（Wrapper 是 model-agnostic、不再幫忙 warmup）
   warmupOllama().catch(() => {});
 }
 
 // 啟動時對 Ollama 丟一筆 num_predict=1 的 dummy chat，把模型載入 GPU，
-// 避免第一筆正式 utterance 撞到 cold-start latency。Fire-and-forget。
+// 避免第一筆正式 utterance 撞到 cold-start latency。
 async function warmupOllama() {
   if (!olwChatForm) return;
   const t0 = Date.now();
@@ -114,7 +110,7 @@ async function warmupOllama() {
   }
 }
 
-// 展開 W3C URI Template Form-style query `{?var1,var2}`（W3C TD 1.1 §5.3.4.2）
+// 展開 W3C URI Template Form-style query `{?var1,var2}`
 function expandUriTemplate(href, vars) {
   return href.replace(/\{\?([^}]+)\}/g, (_, group) => {
     const pairs = group
@@ -128,7 +124,7 @@ function expandUriTemplate(href, vars) {
 function buildMegaUserPrompt(contextRows, speakerName, utterance) {
   const parts = [];
   if (contextRows.length > 0) {
-    // SQL 撈出來是 DESC（最新→最舊），反轉成正序給模型
+    // SQL 撈出來是 DESC（最新到最舊），反轉成正序給模型
     const lines = contextRows
       .slice()
       .reverse()
@@ -294,7 +290,7 @@ export async function handleUtterance(mic_id, ctx, output) {
     return;
   }
   if (!text) {
-    // Whisper 反幻覺過濾後回空字串（純噪音）→ 不留 DB、不發 SSE
+    // Whisper 反幻覺過濾後回空字串（純噪音）時不留 DB、不發 SSE
     console.log(`[orch] empty stt mic=${mic_id} ${audio.byteLength}B, drop`);
     return;
   }
