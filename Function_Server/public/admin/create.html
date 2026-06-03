@@ -226,6 +226,10 @@ function addMicRow() {
 async function submit() {
   errEl.textContent = "";
   const name = document.getElementById("room-name").value.trim();
+  if (!name) {
+    errEl.textContent = "請輸入會議室名稱。";
+    return;
+  }
   const mics = [];
   for (const row of rowsEl.querySelectorAll(".mic-row")) {
     const mic_id = row.querySelector(".mic-select").value;

@@ -5,8 +5,7 @@
   "type": "module",
   "main": "fs_node.js",
   "scripts": {
-    "start": "node fs_node.js",
-    "init-db": "node scripts/init-db.js"
+    "start": "node fs_node.js"
   },
   "dependencies": {
     "@node-wot/binding-http": "^0.9.2",

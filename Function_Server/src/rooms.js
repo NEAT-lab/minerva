@@ -78,6 +78,11 @@ async function subscribeMic(mic_id, ctx) {
 
 export async function createRoom({ name, mics }) {
   // 驗證 input shape
+  if (typeof name !== "string" || name.trim().length === 0) {
+    throw httpError(400, "bad_request", {
+      message: "name is required",
+    });
+  }
   if (!Array.isArray(mics) || mics.length === 0) {
     throw httpError(400, "bad_request", {
       message: "mics must be non-empty array",
@@ -113,7 +118,7 @@ export async function createRoom({ name, mics }) {
   const now = Date.now();
   const attendees = [];
   db.transaction(() => {
-    stmt.insertRoom.run(room_id, name ?? "", now);
+    stmt.insertRoom.run(room_id, name.trim(), now);
     for (const m of mics) {
       const access_token = randomUUID();
       const info = stmt.insertAttendee.run(
