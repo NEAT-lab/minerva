@@ -7,14 +7,15 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// GPU server 的 LAN IP（broker / FS 對外暴露皆用之）。部署換機器只改這一行。
-export const LAN_HOST = "LAN_HOST";
+// GPU server 的 LAN IP（broker / FS 對外暴露皆用之）。
+// 實際 IP 不寫死進 repo：由 run.sh 載入 git 不追蹤的 env.sh 提供，未設時退回 localhost。
+export const LAN_HOST = process.env.LAN_HOST || "localhost";
 
 // TLS：手機瀏覽器存取麥克風需 secure context。把 mkcert 簽出的憑證放到 certs/，
 // FS 就自動走 HTTPS；憑證不存在時退回 HTTP（純後端 demo / 桌機 localhost 不受影響）。
-//   mkcert LAN_HOST 後：
-//     cp LAN_HOST.pem      Function_Server/certs/cert.pem
-//     cp LAN_HOST-key.pem  Function_Server/certs/key.pem
+//   mkcert <LAN_HOST> 後：
+//     cp <LAN_HOST>.pem      Function_Server/certs/cert.pem
+//     cp <LAN_HOST>-key.pem  Function_Server/certs/key.pem
 const CERT_DIR = path.resolve(__dirname, "..", "certs");
 export const TLS_KEY_PATH = path.join(CERT_DIR, "key.pem");
 export const TLS_CERT_PATH = path.join(CERT_DIR, "cert.pem");

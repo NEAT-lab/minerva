@@ -57,6 +57,9 @@ await rebuildOnStartup();
 const app = express();
 app.use(express.json());
 
+// 根路徑導向管理介面（首頁本身無內容）
+app.get("/", (req, res) => res.redirect("/admin/"));
+
 // --- Admin Web UI ---
 // 信任網路內部使用，無 auth；論文小專案不引入 admin 帳號系統。
 // express.static 預設 redirect /admin 到 /admin/、自動 serve /admin/ 的 index.html。

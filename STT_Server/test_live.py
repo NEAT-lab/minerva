@@ -6,6 +6,7 @@ Usage:
 需要 STT Server 已啟動（python app.py）。
 """
 import argparse
+import os
 import time
 
 import paho.mqtt.client as mqtt
@@ -13,7 +14,7 @@ import requests
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--broker", default="LAN_HOST")
+parser.add_argument("--broker", default=os.environ.get("MQTT_BROKER_HOST", "localhost"))
 parser.add_argument("--port", type=int, default=1883)
 parser.add_argument("--stt", default="http://localhost:5003/transcribe")
 parser.add_argument("--lang", default=None, help="ISO 639-1 hint, e.g. en / zh")
