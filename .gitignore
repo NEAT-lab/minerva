@@ -9,3 +9,5 @@ venv
 calibration.json
 node_modules/
 docs/
+certs/
+*.pem

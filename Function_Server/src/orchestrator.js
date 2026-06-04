@@ -268,13 +268,13 @@ async function callOllama(speakerName, utterance, contextRows, onField) {
   };
 }
 
-export async function handleUtterance(mic_id, ctx, output) {
+// audio 為一段 self-contained 的 Opus binary（RPi 為 OggOpus、手機瀏覽器多為 webm/opus）。
+// 兩種來源（RPi Mic Thing event / 手機 magic link HTTP 上傳）匯流到這條同一條後端流水線；
+// mic_id 對手機為 `phone:{attendee_id}`，僅用於 log 與 speaker_mic_id。
+export async function handleUtterance(mic_id, ctx, audio) {
   const ts = Date.now();
-  let audio;
-  try {
-    audio = Buffer.from(await output.arrayBuffer());
-  } catch (err) {
-    console.error(`[orch] arrayBuffer error mic=${mic_id}:`, err);
+  if (!audio || audio.byteLength === 0) {
+    console.warn(`[orch] empty audio mic=${mic_id}, skip`);
     return;
   }
 

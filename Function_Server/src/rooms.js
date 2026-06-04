@@ -66,8 +66,15 @@ async function subscribeMic(mic_id, ctx) {
   console.log(`[rooms] consumed mic=${mic_id} title="${consumed.getThingDescription().title}"`);
   const sub = await consumed.subscribeEvent("audio", async (output) => {
     console.log(`[rooms] >>> audio event arrived mic=${mic_id}`);
+    let audio;
     try {
-      await handleUtterance(mic_id, ctx, output);
+      audio = Buffer.from(await output.arrayBuffer());
+    } catch (err) {
+      console.error(`[rooms] arrayBuffer error mic=${mic_id}:`, err);
+      return;
+    }
+    try {
+      await handleUtterance(mic_id, ctx, audio);
     } catch (err) {
       console.error(`[rooms] handleUtterance threw:`, err);
     }
@@ -76,38 +83,41 @@ async function subscribeMic(mic_id, ctx) {
   return sub;
 }
 
-export async function createRoom({ name, mics }) {
+// 每位與會者：{ user_name, mic_id }。mic_id 為 null/省略 = 用手機麥克風
+// （語音改走 magic link 的 HTTP 上傳，不綁 RPi Mic Thing、不需 subscribeEvent）。
+export async function createRoom({ name, attendees: input }) {
   // 驗證 input shape
   if (typeof name !== "string" || name.trim().length === 0) {
     throw httpError(400, "bad_request", {
       message: "name is required",
     });
   }
-  if (!Array.isArray(mics) || mics.length === 0) {
+  if (!Array.isArray(input) || input.length === 0) {
     throw httpError(400, "bad_request", {
-      message: "mics must be non-empty array",
+      message: "attendees must be non-empty array",
     });
   }
-  for (const m of mics) {
-    if (!m?.mic_id || !m?.user_name) {
+  for (const a of input) {
+    if (!a?.user_name) {
       throw httpError(400, "bad_request", {
-        message: "each mic entry needs mic_id + user_name",
+        message: "each attendee needs user_name",
       });
     }
   }
+  // 僅 RPi 與會者帶 mic_id；手機與會者 mic_id 為 null
+  const micIds = input.map((a) => a.mic_id).filter(Boolean);
   // 表單內若有 mic 重複，前端理論上會擋；後端再防一道
-  const micIds = mics.map((m) => m.mic_id);
   if (new Set(micIds).size !== micIds.length) {
     throw httpError(400, "duplicate_mic_in_request");
   }
 
-  // mic online 驗證
+  // mic online 驗證（只驗 RPi mic）
   const offline = micIds.filter((id) => onlineStatus.get(id) !== true);
   if (offline.length) {
     throw httpError(422, "mic_offline", { mic_ids: offline });
   }
 
-  // mic 排他性 SQL 檢查
+  // mic 排他性 SQL 檢查（只驗 RPi mic）
   const conflicts = findMicConflicts(micIds);
   if (conflicts.length) {
     throw httpError(422, "mic_in_use", { mic_ids: conflicts });
@@ -119,28 +129,30 @@ export async function createRoom({ name, mics }) {
   const attendees = [];
   db.transaction(() => {
     stmt.insertRoom.run(room_id, name.trim(), now);
-    for (const m of mics) {
+    for (const a of input) {
       const access_token = randomUUID();
+      const mic_id = a.mic_id || null;
       const info = stmt.insertAttendee.run(
         room_id,
-        m.user_name,
-        m.mic_id,
+        a.user_name,
+        mic_id,
         access_token,
         now
       );
       attendees.push({
         id: info.lastInsertRowid,
-        name: m.user_name,
-        mic_id: m.mic_id,
+        name: a.user_name,
+        mic_id,
         access_token,
       });
     }
   })();
 
-  // consume mic + subscribeEvent
+  // consume mic + subscribeEvent（只對 RPi 與會者；手機與會者待開連結後走 HTTP 上傳）
   const subs = new Set();
   try {
     for (const att of attendees) {
+      if (!att.mic_id) continue;
       const ctx = {
         room_id,
         attendee_id: att.id,
@@ -205,7 +217,7 @@ export async function closeRoom(room_id) {
     subscriptions.delete(room_id);
   }
   for (const a of stmt.listAttendeesByRoom.all(room_id)) {
-    micToAttendee.delete(a.mic_id);
+    if (a.mic_id) micToAttendee.delete(a.mic_id);
   }
   const closed_at = Date.now();
   stmt.closeRoom.run(closed_at, room_id);
@@ -223,6 +235,7 @@ export async function rebuildOnStartup() {
     const attendees = stmt.listAttendeesByRoom.all(room.room_id);
     const subs = new Set();
     for (const att of attendees) {
+      if (!att.mic_id) continue; // 手機與會者無常駐 subscription，待開連結後走 HTTP 上傳
       try {
         const ctx = {
           room_id: room.room_id,

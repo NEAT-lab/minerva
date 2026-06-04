@@ -2,6 +2,9 @@
 // 載入順序：servient（top-level await 啟動）、presence、rooms、Express。
 
 import express from "express";
+import http from "node:http";
+import https from "node:https";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { servient } from "./src/servient.js"; // side effect：servient.start()
@@ -18,9 +21,15 @@ import {
   closeRoom,
   rebuildOnStartup,
 } from "./src/rooms.js";
-import { consumeSharedThings } from "./src/orchestrator.js";
+import { consumeSharedThings, handleUtterance } from "./src/orchestrator.js";
 import { fetchAllTDs } from "./src/td_loader.js";
-import { FS_PORT, FS_BASE_URL } from "./src/config.js";
+import {
+  FS_PORT,
+  FS_BASE_URL,
+  TLS_ENABLED,
+  TLS_CERT_PATH,
+  TLS_KEY_PATH,
+} from "./src/config.js";
 import { verifyToken } from "./src/auth.js";
 import { addClient } from "./src/sse.js";
 import { stmt } from "./src/db.js";
@@ -88,6 +97,35 @@ app.get("/api/displays/:room/:token/self", (req, res) => {
     room_closed_at: room?.closed_at ?? null,
   });
 });
+
+// 手機麥克風語音上傳：與會者的 magic link 頁按住說話、放開即 POST 一段 webm/opus。
+// 走 token 驗證的應用層入口（非 WoT Mic Thing），匯入與 RPi mic 相同的 handleUtterance。
+// 僅限手機與會者（mic_id IS NULL）；RPi 與會者的聲音來自實體裝置，拒絕重複入口。
+app.post(
+  "/api/displays/:room/:token/utterance",
+  express.raw({ type: () => true, limit: "12mb" }),
+  (req, res) => {
+    const att = verifyToken(req.params.room, req.params.token);
+    if (!att) return res.status(403).json({ error: "invalid_token" });
+    if (att.mic_id != null) {
+      return res.status(409).json({ error: "not_a_phone_mic" });
+    }
+    const room = stmt.getRoom.get(req.params.room);
+    if (!room || room.closed_at != null) {
+      return res.status(409).json({ error: "room_closed" });
+    }
+    const audio = req.body;
+    if (!audio || audio.length === 0) {
+      return res.status(400).json({ error: "empty_audio" });
+    }
+    const ctx = { room_id: req.params.room, attendee_id: att.id, name: att.name };
+    // 不 await：後端流水線（STT → Tr/Olw）可能數秒，先回 202 讓手機端釋放、可立刻錄下一句。
+    handleUtterance(`phone:${att.id}`, ctx, audio).catch((err) =>
+      console.error(`[fs] phone utterance att=${att.id} error:`, err)
+    );
+    res.status(202).json({ ok: true });
+  }
+);
 
 app.get("/api/displays/:room/:token/history", (req, res) => {
   const att = verifyToken(req.params.room, req.params.token);
@@ -181,8 +219,23 @@ app.use((err, req, res, _next) => {
   res.status(500).json({ error: "internal_error", message: err.message });
 });
 
-app.listen(FS_PORT, "0.0.0.0", () => {
-  console.log(`[fs] listening on ${FS_BASE_URL} (bind 0.0.0.0:${FS_PORT})`);
+// 有 mkcert 憑證走 HTTPS（手機麥克風 secure context 需要）；否則退回 HTTP。
+const server = TLS_ENABLED
+  ? https.createServer(
+      { key: fs.readFileSync(TLS_KEY_PATH), cert: fs.readFileSync(TLS_CERT_PATH) },
+      app
+    )
+  : http.createServer(app);
+
+server.listen(FS_PORT, "0.0.0.0", () => {
+  console.log(
+    `[fs] listening on ${FS_BASE_URL} (${TLS_ENABLED ? "https" : "http"}, bind 0.0.0.0:${FS_PORT})`
+  );
+  if (!TLS_ENABLED) {
+    console.log(
+      "[fs] TLS 關閉（certs/ 無憑證）；手機麥克風需 HTTPS，請放 mkcert 憑證後重啟"
+    );
+  }
 });
 
 process.on("SIGINT", () => {

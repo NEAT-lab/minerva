@@ -211,7 +211,7 @@ async function renderAttendees(roomDiv, room_id) {
       <div class="qr"></div>
       <div>
         <div class="name">${att.name}</div>
-        <div class="mic">mic ${micShort(att.mic_id)}</div>
+        <div class="mic">${att.mic_id ? "mic " + micShort(att.mic_id) : "📱 手機麥克風"}</div>
         <div class="url-box">
           <input type="text" readonly value="${att.magic_url}">
           <button class="secondary copy">複製</button>

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS attendees (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     room_id      TEXT NOT NULL,
     name         TEXT NOT NULL,
-    mic_id       TEXT NOT NULL,
+    mic_id       TEXT,                 -- NULL = 手機麥克風（語音走 magic link HTTP 上傳，非 RPi Mic Thing）
     access_token TEXT NOT NULL UNIQUE,
     joined_at    INTEGER NOT NULL,
     left_at      INTEGER,
@@ -59,6 +59,40 @@ CREATE INDEX IF NOT EXISTS idx_utterance_speaker ON utterances(speaker_attendee_
 `;
 
 db.exec(SCHEMA);
+
+// Migration：早期 schema 的 attendees.mic_id 為 NOT NULL；手機與會者需要 NULL。
+// 既有 DB 用 SQLite table-rebuild 放寬約束並保留資料。
+// 冪等：放寬後 notnull=0，下次啟動不再執行。
+const micCol = db
+  .prepare("PRAGMA table_info(attendees)")
+  .all()
+  .find((c) => c.name === "mic_id");
+if (micCol && micCol.notnull === 1) {
+  db.pragma("foreign_keys = OFF"); // pragma 在 transaction 內為 no-op，須先設於 transaction 外
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE attendees_new (
+          id           INTEGER PRIMARY KEY AUTOINCREMENT,
+          room_id      TEXT NOT NULL,
+          name         TEXT NOT NULL,
+          mic_id       TEXT,
+          access_token TEXT NOT NULL UNIQUE,
+          joined_at    INTEGER NOT NULL,
+          left_at      INTEGER,
+          FOREIGN KEY (room_id) REFERENCES rooms(room_id)
+      );
+      INSERT INTO attendees_new (id, room_id, name, mic_id, access_token, joined_at, left_at)
+          SELECT id, room_id, name, mic_id, access_token, joined_at, left_at FROM attendees;
+      DROP TABLE attendees;
+      ALTER TABLE attendees_new RENAME TO attendees;
+      CREATE INDEX IF NOT EXISTS idx_attendees_token ON attendees(access_token);
+      CREATE INDEX IF NOT EXISTS idx_attendees_mic   ON attendees(mic_id);
+      CREATE INDEX IF NOT EXISTS idx_attendees_room  ON attendees(room_id);
+    `);
+  })();
+  db.pragma("foreign_keys = ON");
+  console.log("[db] migrated attendees.mic_id -> nullable");
+}
 
 export const stmt = {
   insertRoom: db.prepare(

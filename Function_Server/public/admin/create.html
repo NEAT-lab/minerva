@@ -46,10 +46,11 @@
   input[type="text"]:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
   .mic-row {
-    display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end;
+    display: grid; grid-template-columns: 130px 1fr 1fr auto; gap: 10px; align-items: end;
     padding: 10px 0; border-bottom: 1px dashed var(--border);
   }
   .mic-row:last-of-type { border-bottom: none; }
+  .mic-row .mic-cell.hidden { visibility: hidden; }
   .mic-row button.remove {
     background: white; border: 1px solid var(--border); color: var(--muted);
     padding: 8px 12px; border-radius: 4px; cursor: pointer; height: 36px;
@@ -108,12 +109,12 @@
     <label for="room-name">會議室名稱</label>
     <input id="room-name" type="text" placeholder="例如：NEAT-Lab Weekly" autocomplete="off">
 
-    <h2 style="margin-top: 20px;">參與麥克風 <span class="info" id="mic-count">(0)</span></h2>
+    <h2 style="margin-top: 20px;">與會者 <span class="info" id="mic-count">(0)</span></h2>
+    <p class="info" id="mic-avail">可用 RPi 麥克風：0 隻（手機與會者不需 RPi 麥克風）</p>
     <div id="mic-rows"></div>
-    <div id="empty-mics" class="empty-mics" hidden>沒有可用的麥克風。請確認 mic 已上線。</div>
 
     <div class="row-actions">
-      <button type="button" class="secondary" id="add-mic">+ 新增麥克風</button>
+      <button type="button" class="secondary" id="add-mic">+ 新增與會者</button>
       <button type="button" class="primary" id="submit">建立會議室</button>
     </div>
 
@@ -140,7 +141,8 @@ const submitBtn = document.getElementById("submit");
 async function loadMics() {
   const r = await fetch("/api/mics/available");
   availableMics = await r.json();
-  document.getElementById("empty-mics").hidden = availableMics.length > 0;
+  document.getElementById("mic-avail").textContent =
+    `可用 RPi 麥克風：${availableMics.length} 隻（手機與會者不需 RPi 麥克風）`;
   updateMicCount();
 }
 
@@ -169,16 +171,20 @@ function renderQr(el, text, size) {
   }
 }
 
+// 只收集「來源 = RPi」之 row 已選的 mic_id（手機 row 無 mic）
 function getSelectedMicIds(exceptRow) {
   return Array.from(rowsEl.querySelectorAll(".mic-row"))
-    .filter(r => r !== exceptRow)
+    .filter(r => r !== exceptRow && r.querySelector(".source-select").value === "rpi")
     .map(r => r.querySelector(".mic-select").value)
     .filter(Boolean);
 }
 
 function refreshSelectOptions() {
   for (const row of rowsEl.querySelectorAll(".mic-row")) {
+    const isRpi = row.querySelector(".source-select").value === "rpi";
+    row.querySelector(".mic-cell").classList.toggle("hidden", !isRpi);
     const sel = row.querySelector(".mic-select");
+    if (!isRpi) { sel.value = ""; continue; }
     const current = sel.value;
     const used = new Set(getSelectedMicIds(row));
     sel.innerHTML = '<option value="">— 選擇 mic —</option>';
@@ -198,11 +204,19 @@ function updateMicCount() {
 }
 
 function addMicRow() {
-  if (availableMics.length === 0) return;
   const row = document.createElement("div");
   row.className = "mic-row";
+  // 無可用 RPi mic 時預設手機，省得使用者再切
+  const defaultPhone = availableMics.length === 0;
   row.innerHTML = `
     <div>
+      <label>來源</label>
+      <select class="source-select">
+        <option value="rpi"${defaultPhone ? "" : " selected"}>RPi 麥克風</option>
+        <option value="phone"${defaultPhone ? " selected" : ""}>手機麥克風</option>
+      </select>
+    </div>
+    <div class="mic-cell">
       <label>麥克風</label>
       <select class="mic-select"></select>
     </div>
@@ -213,6 +227,7 @@ function addMicRow() {
     <button type="button" class="remove">移除</button>
   `;
   rowsEl.appendChild(row);
+  row.querySelector(".source-select").addEventListener("change", refreshSelectOptions);
   row.querySelector(".mic-select").addEventListener("change", refreshSelectOptions);
   row.querySelector(".remove").addEventListener("click", () => {
     row.remove();
@@ -230,18 +245,27 @@ async function submit() {
     errEl.textContent = "請輸入會議室名稱。";
     return;
   }
-  const mics = [];
+  const attendees = [];
   for (const row of rowsEl.querySelectorAll(".mic-row")) {
-    const mic_id = row.querySelector(".mic-select").value;
+    const source = row.querySelector(".source-select").value;
     const user_name = row.querySelector(".user-name").value.trim();
-    if (!mic_id || !user_name) {
-      errEl.textContent = "每隻麥克風都要選 mic 並填使用者名稱。";
+    if (!user_name) {
+      errEl.textContent = "每位與會者都要填使用者名稱。";
       return;
     }
-    mics.push({ mic_id, user_name });
+    if (source === "rpi") {
+      const mic_id = row.querySelector(".mic-select").value;
+      if (!mic_id) {
+        errEl.textContent = "來源為 RPi 的與會者要選一隻麥克風。";
+        return;
+      }
+      attendees.push({ user_name, mic_id });
+    } else {
+      attendees.push({ user_name, mic_id: null });
+    }
   }
-  if (mics.length === 0) {
-    errEl.textContent = "至少要加一隻麥克風。";
+  if (attendees.length === 0) {
+    errEl.textContent = "至少要加一位與會者。";
     return;
   }
 
@@ -251,7 +275,7 @@ async function submit() {
     const r = await fetch("/api/rooms", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, mics }),
+      body: JSON.stringify({ name, attendees }),
     });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
@@ -285,7 +309,7 @@ function showResult(name, data) {
       <div class="qr"></div>
       <div class="meta">
         <div class="name">${att.name}</div>
-        <div class="mic">mic ${micShort(att.mic_id)}</div>
+        <div class="mic">${att.mic_id ? "mic " + micShort(att.mic_id) : "📱 手機麥克風"}</div>
         <div class="url-box">
           <input type="text" readonly value="${att.magic_url}">
           <button class="secondary copy">複製</button>
@@ -309,7 +333,7 @@ document.getElementById("add-mic").addEventListener("click", addMicRow);
 document.getElementById("submit").addEventListener("click", submit);
 
 loadMics().then(() => {
-  if (availableMics.length > 0) addMicRow();
+  addMicRow();
 });
 </script>
 </body>
